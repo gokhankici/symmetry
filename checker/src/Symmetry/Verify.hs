@@ -40,7 +40,7 @@ instance Options MainOptions where
                   <*> simpleOption "qc" False "Generate QuickCheck files"
                   <*> simpleOption "verbose" False "Verbose Output"
                   <*> simpleOption "dump-process" False "Display Intermediate Process Description"
-                  <*> simpleOption "dump-model" False "Dump Spin model"
+                  <*> simpleOption "dump-model" False "Dump Liquid Haskell model"
                   <*> simpleOption "outdir" ".symcheck" "Directory to store intermediate results"
 
 runCmd               :: Bool -> String -> FilePath -> CreateProcess -> IO ()
@@ -104,7 +104,7 @@ run1Cfg opt outd cfg
   = do when (optModel opt) $ do
          createDirectoryIfMissing True outd
          copyIncludes opt outd
-       if (optVerify opt) then do
+       if optVerify opt || optQC opt then do
          let (cinfo, m) = generateModel cfg
              cinfo'     = cinfo {isQC = optQC opt}
              f          = printHaskell cinfo' m
@@ -138,10 +138,8 @@ checkerMain :: SymbEx () -> IO ()
 checkerMain main
   = runCommand $ \opts _ -> do
 
-      when (optProcess opts) .
-        forM_ cfgs $ \c ->
-          print $ text "Config" <> nest 2 (line <> pretty c)
-
+      when (optProcess opts) $
+        forM_ cfgs pprint
       d <- getCurrentDirectory
 
       let  dir  = optDir opts
@@ -157,25 +155,21 @@ checkerMain main
       exitSuccess
 
     where
+      pprint :: Config () -> IO () 
+      pprint c = print $
+                    text "Config" <>
+                    nest 2 (line  <> pretty (annotAsserts c))
       cfgs = stateToConfigs . runSymb $ main
-
-outTrace = "/tmp/trace"
-
-spinTrailCmd  :: String -> CreateProcess
-spinTrailCmd f = shell ("spin -p -t " ++ f ++
-                        "| sed '/:init:/d' " ++
-                        "| grep -E '^[[:space:]]*[[:digit:]]+:' >" ++ outTrace)
-
 
 type IdStmtMap = M.Map Int (Stmt Int)
 
 flattenStmt                     :: Stmt a -> [Stmt a]
-flattenStmt s@(SBlock l _)       = s : (concatMap flattenStmt l)
-flattenStmt s@(SIter _ _ s' _)   = s : (flattenStmt s')
-flattenStmt s@(SLoop _ s' _)     = s : (flattenStmt s')
-flattenStmt s@(SChoose _ _ s' _) = s : (flattenStmt s')
-flattenStmt s@(SCase _ _ _ sl sr _)  = s : (concatMap flattenStmt [sl,sr])
-flattenStmt s@(SNonDet l _)      = s : (concatMap flattenStmt l)
+flattenStmt s@(Block l _)       = s : (concatMap flattenStmt l)
+flattenStmt s@(Iter _ _ s' _)   = s : (flattenStmt s')
+flattenStmt s@(Loop _ s' _)     = s : (flattenStmt s')
+flattenStmt s@(Choose _ _ s' _) = s : (flattenStmt s')
+flattenStmt s@(Case _ _ _ sl sr _)  = s : (concatMap flattenStmt [sl,sr])
+flattenStmt s@(NonDet l _)      = s : (concatMap flattenStmt l)
 flattenStmt s                    = [s]
 
 buildIdStmtMap                         :: Config Int -> IdStmtMap
@@ -183,6 +177,7 @@ buildIdStmtMap (Config { cProcs = ps }) =
   let pairs = [ (annot s,s) | (pid,main_s) <- ps, s <- (flattenStmt main_s) ]
    in M.fromList pairs
 
+dangerZone :: String -> IO ()
 dangerZone str =
   do setSGR [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
      putStr str
