@@ -30,7 +30,7 @@ emptyVec     = V (Map.empty)
 
 {-@ mkVec :: x:a -> Vec <{\v -> 0=0}, {\i v-> v=x}> a @-}
 mkVec     :: a -> Vec  a
-mkVec x   = undefined
+mkVec x   = setVec 0 x emptyVec
 
 {-@ getVec :: forall a <r :: x0: Int -> x1: a -> Prop, d :: x0: Int -> Prop>.
              i: Int<d> ->

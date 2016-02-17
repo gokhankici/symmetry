@@ -22,7 +22,9 @@ import           Symmetry.IL.Model.HaskellSpec ( initSpecOfConfig
                                                , mapType
                                                , withStateFields
                                                )
-  
+
+import Debug.Trace
+
 ---------------------------------
 -- Wrapper type for Haskell code
 ---------------------------------
@@ -639,12 +641,11 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
   where tc_name   = UnQual $ name "Arbitrary"
         tv_name   = TyVar $ name stateRecordCons
         var' s    = var $ name s
-        vh:vt     = stateVarArbs ci
         arb       = Match noLoc (name "arbitrary") [] Nothing genExp Nothing
         genExp    = UnGuardedRhs $ Do (bs ++ [retState])
         retState  = Qualifier (metaFunction "return" [recExp])
         recExp    = RecConstr (UnQual (name stateRecordCons)) [FieldWildcard]
-        bs        = withStateFields ci concat absArb arbPC arbPtr arbVal arbInt arbGlob arbGlobVal 
+        bs        = withStateFields ci concat absArb arbPC arbPtr arbVal arbInt arbGlobVal arbGlob
         bind v e  = Generator noLoc (pvar (name v)) e
         absArb _ b u pc = [ bind b arbPos
                           , bind u (arbRange (intE 0) (vExp b))
@@ -654,13 +655,8 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
         arbPtr p rd wr = concat [arbInt p rd, arbInt p wr]
         arbInt p v     = [bind v $ if isAbs p then arbEmptyMap else arbZero]
         arbVal p v     = [bind v $ if isAbs p then arbEmptyMap else arbNull]
-        arbGlob v      = [bind v arbZero]
         arbGlobVal v   = [bind v arbNull]
-        -- abs
-        -- gen_exp   = foldl' (\e v -> fapp_syn e v)
-        --                    (fmap_syn (Con $ UnQual $ name stateRecordCons) vh)
-        --                    vt
-        -- arb_rhs   = UnGuardedRhs $ genExp
+        arbGlob v      = [bind v arbZero]
 
 -- instance Arbitrary p1 => Arbitrary (Pid_pre p1) where
 --         arbitrary = oneof [return PIDR0, PIDR2 <$> arbitrary, ...]
@@ -687,51 +683,6 @@ arbitraryPidPreDecl ci =
         ts       = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
         mkTy     = name . ("p" ++) . show
 
-
--- Returns the name and type of each variable in the State
-stateVarsNTList    :: ConfigInfo Int -> [(String,Type)]
-stateVarsNTList ci =
-  pcFs ++ ptrFs ++ valVarFs ++ intVarFs ++ absFs ++ globFs
-  where -- program counters
-        pcFs     = [ mkPC p (pc p) | p <- pids ci ]
-        -- read & write pointers (of type integer)
-        ptrFs    = [ mkInt p (ptrR ci p t) | p <- pids ci, t <- fst <$> tyMap ci] ++
-                   [ mkInt p (ptrW ci p t) | p <- pids ci, t <- fst <$> tyMap ci]
-        -- value variables
-        valVarFs = [ mkVal p v | (p, v) <- valVars (stateVars ci) ]
-        -- integer variables
-        intVarFs = [ mkInt p v | (p, v) <- intVars (stateVars ci) ]
-        -- ???
-        absFs    = concat [ [mkBound p, mkCounter p, mkUnfold p] | p <- pids ci, isAbs p ]
-        -- global variables ???
-        globFs = [ (v, valHType ci) | v <- globVals (stateVars ci) ] ++
-                 [ (v, intType)     | V v <- setBoundVars ci ]
-
-        -- helper functions
-        mkUnfold p  = (pidUnfold p, intType)
-        mkBound p   = (pidBound p,  intType)
-        mkCounter p = (pcCounter p, mapType intType intType)
-        mkPC  = liftMap intType
-        mkVal = liftMap (valHType ci)
-        mkInt = liftMap intType
-        liftMap t p v = (v, if isAbs p then mapType intType t else t)
-
-
--- for each field of the state record, use "return 0" for the integers and
--- "arbitrary" for the rest of the generators
-stateVarArbs    :: ConfigInfo Int -> [Exp]
-stateVarArbs ci = map getArb (stateVarsNTList ci)
-                    where getArb (_, TyCon (UnQual (Ident n)))
-                            | n == "Int" = ret0
-                            | otherwise  = vararb
-                          getArb (_, TyApp (TyCon (UnQual (Ident "Val"))) _) = vararb
-                          getArb (_, TyApp (TyApp (TyCon (UnQual (Ident "Map_t"))) _ ) _ ) = retMap
-                          getArb x = error ("Unimplemented generator: " ++ (show x))
-
-                          vararb   = var $ name $ "arbitrary"
-                          ret0     = app (var $ name "return") (Lit $ Int 0)
-                          retMap   = app (var $ name "return") (var $ name "emptyMap")
-
 -- ### Aeson (FromJSON, ToJSON) instances ##################################################
 
 -- instance FromJSON State where
@@ -745,17 +696,13 @@ stateFromJSONDecl ci =
   InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl (FunBind [fr, fr_err])]
   where
         fr = Match noLoc (name "parseJSON") fr_arg Nothing (UnGuardedRhs rhs) Nothing
-        -- State <$> s .: <first var> <*> s .: <second var> <*> ...
-        -- rhs = foldl' (\e s -> fapp_syn e s) rhs' ns'
+        -- do { var1 <- ..., ..., return State{...} }
         rhs = Do (bs ++ [Qualifier ret])
         ret = metaFunction "return" [RecConstr (qname stateRecordCons) [FieldWildcard]]
-        -- State <$> s .: <first var>
-        -- rhs' = fmap_syn (Con $ qname stateRecordCons) n'
-        -- parser for each variable
+        -- accessor for each variable
         varParser n = Generator noLoc (pvarn n)
                       (infix_syn ".:" (var $ name "s") (Lit $ String n))
-        -- the names of the arguments in the state
-        -- n':ns' = map (varParser . fst) (stateVarsNTList ci)
+        -- parser for each variable
         bs = withStateFields ci concat absFs pcFs ptrFs field field glob glob
         absFs _ x y z = [varParser x, varParser y, varParser z]
         pcFs _ f      = [varParser f]
