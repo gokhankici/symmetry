@@ -1,12 +1,11 @@
-{-# Language MultiParamTypeClasses #-}
-{-# Language FunctionalDependencies #-}
 module Symmetry.IL.Model where
 
 import Prelude hiding (and, or, pred)
 import Text.Printf
+import Data.List (foldl')
 import Data.Generics
 import Data.Char
-import Symmetry.IL.AST
+import Symmetry.IL.AST hiding (isUnfold)
 import Symmetry.IL.ConfigInfo
 
 import Text.PrettyPrint.Leijen (pretty)
@@ -107,14 +106,19 @@ class ILModel e where
   lneg      :: e -> e
   lt        :: e -> e -> e
   lte       :: e -> e -> e
+  ite       :: e -> e -> e -> e
   int       :: Int -> e
+  movePCCounter :: ConfigInfo a -> Pid -> e -> e -> e
+  readMap   :: e -> e -> e
 
   readPC    :: ConfigInfo a -> Pid -> e
-  readPCCounter :: ConfigInfo a -> Pid -> e -> e
+  readPCCounter :: ConfigInfo a -> Pid -> e
   readPtrR  :: ConfigInfo a -> Pid -> Type -> e
   readPtrW  :: ConfigInfo a -> Pid -> Pid -> Type -> e
   readRoleBound :: ConfigInfo a -> Pid -> e
   readState :: ConfigInfo a -> Pid -> String -> e
+
+  isUnfold :: ConfigInfo a -> Pid -> e
 
   nonDet      :: ConfigInfo a -> Pid -> e
   nonDetRange :: ConfigInfo a -> Pid -> Set -> e
@@ -126,6 +130,7 @@ class ILModel e where
   incrPtrR   :: ConfigInfo a -> Pid -> Type -> e
   incrPtrW   :: ConfigInfo a -> Pid -> Pid -> Type -> e
   setState   :: ConfigInfo a -> Pid -> [(String , e)] -> e
+  setPCCounter :: ConfigInfo a -> Pid -> e -> e
   putMessage :: ConfigInfo a -> Pid -> Pid -> (ILExpr, Type) -> e
   getMessage :: ConfigInfo a -> Pid -> (Var, Type) -> e
 
@@ -141,25 +146,39 @@ class ILModel e where
 ands :: ILModel e => [e] -> e
 ands []     = true
 ands [x]    = x
-ands (x:xs) = foldr and x xs
+ands (x:xs) = foldl' and x xs
 
 ors :: ILModel e => [e] -> e
 ors []     = false
 ors [x]    = x
-ors (x:xs) = foldr or x xs
+ors (x:xs) = foldl' or x xs
 
 pcGuard :: (Identable a, ILModel e)
         => ConfigInfo a -> Pid -> Stmt a -> e
 pcGuard ci p s = readPC ci p `eq` int (ident s)
 
+condUpdate ci p i j
+  = ite (isUnfold ci p)
+        (readPCCounter ci p)
+        (movePCCounter ci p (int i) (int j))
+
+updPC :: (ILModel e, Identable a)
+      => ConfigInfo a -> Pid -> Int -> Int -> e
+updPC ci p i j
+  = seqUpdates ci p
+        ([ setPC ci p (int i) ] ++
+         [ setPCCounter ci p (condUpdate ci p i j) | isAbs p ])
+
 nextPC :: (Identable a, ILModel e)
        => ConfigInfo a -> Pid -> Stmt a -> e
-nextPC ci p s = nextPC' ci p $ cfgNext ci p (ident s)
+nextPC ci p s
+  = nextPC' ci p $ (ident <$>) <$> cfgNext ci p (ident s)
   where
     nextPC' ci' p' Nothing
-      = setPC ci' p' (int (-1))
-    nextPC' ci' p' (Just [s])
-      = setPC ci' p' (int (ident s))
+      = nextPC' ci' p' (Just [-1])--  [ setPC ci' p' (int (-1)) ] ++
+        -- [ setPCCounter ci' p' (condUpdate ci' p' (ident s) (-1)) | isAbs p' ]
+    nextPC' ci' p' (Just [s'])
+      = updPC ci' p' (ident s) (ident s')
     nextPC' _ _ (Just _)
       = error "nextPC unexpected"
 
@@ -229,10 +248,10 @@ ruleOfStmt ci p s@Case{caseLPat = V l, caseRPat = V r}
             , (ERight (mkLocal r), rUpdates)
             ]
     lUpdates = seqUpdates ci p [ setState ci p [(l, expr ci p $ mkLocal l)]
-                               , setPC ci p (int $ ident (caseLeft s))
+                               , updPC ci p (ident s) (ident (caseLeft s))
                                ]
     rUpdates = seqUpdates ci p [ setState ci p [(r, expr ci p $ mkLocal r)]
-                               , setPC ci p (int $ ident (caseRight s))
+                               , updPC ci p (ident s) (ident (caseRight s))
                                ]
 -------------------------
 -- nondet choice
@@ -242,7 +261,7 @@ ruleOfStmt ci p s@NonDet{}
   where
     grd s' = pcGuard ci p s `and`
             (nonDet ci p `eq` (int (ident s')))
-    us s'  = setPC ci p (int (ident s'))
+    us s'  = updPC ci p (ident s) (ident s')
 
 -------------------------
 -- for (i < n) ...
@@ -262,8 +281,8 @@ ruleOfStmt ci p s@Iter { iterVar = V v, iterSet = set, annot = a }
   where
     b        = pcGuard ci p s `and` lt ve se
     notb     = pcGuard ci p s `and` (lneg (lt ve se))
-    loopUpds = [ setPC ci p (int i) ]
-    exitUpds = [ setPC ci p (int j) ]
+    loopUpds = [ updPC ci p (ident s) i ]
+    exitUpds = [ updPC ci p (ident s) j ]
     ve       = readState ci p v
     se       = case set of
                  S ss    -> readState ci p ss
@@ -275,6 +294,12 @@ ruleOfStmt ci p s@Iter { iterVar = V v, iterSet = set, annot = a }
     (i, j)   = case (ident <$>) <$> cfgNext ci p (ident a) of
                  Just [i, j] -> (i, j)
                  Just [i]    -> (i, -1)
+
+ruleOfStmt ci p s@Loop { loopBody = s' }
+  = [ mkRule ci p (pcGuard ci p s) ups (annot s') ]
+    where
+      ups = updPC ci p (ident s) (ident s')
+
 -------------------------
 -- choose i in I (s)
 -------------------------
