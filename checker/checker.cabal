@@ -22,6 +22,7 @@ data-files:          include/SymMap.hs
                    , include/SymVectorQC.hs
                    , include/SymBoilerPlate.hs
                    , include/SymBoilerPlateQC.hs
+                   , include/TargetClient.hs
 library
   exposed-modules:   Symmetry.Language.AST
                    , Symmetry.Language.Syntax
@@ -63,6 +64,7 @@ library
                      , QuickCheck >= 2.8.1
                      , aeson
                      , aeson-pretty
+                     , target
   hs-source-dirs:      src
                      , tests
   default-language:    Haskell2010

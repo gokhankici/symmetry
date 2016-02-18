@@ -2,9 +2,14 @@ flags: {}
 
 packages:
 - '.'
-- location:
-    git:    https://github.com/ucsd-progsys/liquid-fixpoint.git
-    commit: 6d6bd34c9bcf8e1c1ff40514f2bc12b4fb4fd3df
+
+# 73beca609f13ca79601b633088a31bf704f7c482
+- local-pkgs/target
+
+# ae9e7b4a0e5f51264c0c9205856b36e6cdaa034a
+- local-pkgs/liquidhaskell
+- local-pkgs/liquidhaskell/prover
+- local-pkgs/liquidhaskell/liquid-fixpoint
 
 extra-deps:
 - plugins-1.5.5.0
@@ -15,5 +20,8 @@ extra-deps:
 - haskell-src-exts-1.17.1
 - dotgen-0.4.2
 - fgl-visualize-0.1.0.1
+- daemons-0.2.1
+- hashable-1.2.4.0
+- bifunctors-5.2
 
 resolver: lts-3.8

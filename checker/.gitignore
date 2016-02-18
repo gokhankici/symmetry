@@ -6,3 +6,5 @@ TAGS
 *.hi
 *.o
 *.#*
+local-pkgs
+tmp
