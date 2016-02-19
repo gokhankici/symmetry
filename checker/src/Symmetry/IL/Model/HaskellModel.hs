@@ -219,7 +219,7 @@ hIte _ _ _
 
 hExpr :: Bool -> ConfigInfo a -> Pid -> ILExpr -> HaskellModel
 hExpr _ _ _ EUnit    = ExpM $ con unitCons    
-hExpr _ _ _ EString  = ExpM $ con stringCons
+hExpr _ _ _ EString  = ExpM $ App (con stringCons) (strE "<str>")
 hExpr _ _ _ (EInt i) = hInt i
 hExpr _ _ _ (EPid q@(PConc _))
   = ExpM $ App (con pidCons) (vExp $ pidConstructor q)
@@ -252,6 +252,10 @@ hExpr _ ci p (EPlus e1 e2)
   where
     e1' = unExp $ hExpr False ci p e1
     e2' = unExp $ hExpr False ci p e2
+hExpr b ci p (EProj1 e)
+  = ExpM $ metaFunction "vLeft" [unExp $ hExpr b ci p e]
+hExpr b ci p (EProj2 e)
+  = ExpM $ metaFunction "vRight" [unExp $ hExpr b ci p e]
 
 hExpr _ _ _ e
   = error (printf "hExpr: TBD(%s)" (show e))
@@ -266,9 +270,9 @@ hPred ci p (ILAnd b1 b2)
 hPred ci p (ILOr b1 b2)
   = ExpM $ InfixApp (unExp $ hPred ci p b1) opOr (unExp $ hPred ci p b2)
 hPred ci p (ILBop o e1 e2)
-  = ExpM $ paren (infixApp (unExp $ hExpr True ci p e1)
+  = ExpM $ paren (infixApp (unExp $ hExpr False ci p e1)
                            (qop o)
-                           (unExp $ hExpr True ci p e2))
+                           (unExp $ hExpr False ci p e2))
   where
     qop Eq = opEq
     qop Lt = opLt
@@ -451,7 +455,7 @@ printRules ci rs dl = prettyPrint $ FunBind matches
 
     pat ps = [ PAsPat (name state) (PRec (UnQual (name stateRecordCons)) [PFieldWildcard]) ] ++
              [ pvar (name (buf ci q t)) | q <- pids ci, t <- fst <$> tyMap ci ] ++
-             [ mkSchedPat ps ] ++
+             (if null ps then [peList] else [ mkSchedPat ps ]) ++
              (ifQC ci (pvar (name "qc_ss")))
 
     mkSchedPat ps = foldr (\q rest -> PInfixApp (pidPattern q) list_cons_name rest) schedPVar ps
@@ -461,7 +465,7 @@ printRules ci rs dl = prettyPrint $ FunBind matches
     dlRhs      = UnGuardedRhs (mkAssert dl (if isQC ci
                                               then (var $ name "qc_ss")
                                               else unit_con))
-    dlpat      = pat (pids ci)
+    dlpat      = pat []
 
     findUp p t bufups
       = maybe (vExp $ buf ci p t) (\(p, e) -> updateBuf ci p t e) $ findUpdate p t bufups
@@ -520,10 +524,18 @@ totalCall :: ConfigInfo a -> Decl
 totalCall ci =
   FunBind [Match noLoc (name runState) args Nothing rhs Nothing]
     where
-      bufs = [ wildcard | _ <- pids ci, _ <- tyMap ci ]
-      args = (wildcard : bufs) ++ [wildcard] ++ (ifQC ci wildcard)
-      rhs  = UnGuardedRhs $ if isQC ci then emptyListCon else unitCon
-
+      args = [pvar (name state)] ++
+             (pvar . name <$> bufArgs) ++
+             [schedPat] ++
+             ifQC ci (pvar (name ("states")))
+      bufArgs = [ "a" ++ show i | i <- [0..] | _ <- pids ci, _ <- tyMap ci]
+      rhs  = UnGuardedRhs $
+              metaFunction runState
+                ([vExp state] ++
+                 (vExp <$> bufArgs) ++
+                 [vExp "sched"] ++
+                 ifQC ci (vExp "states"))
+      schedPat = pParen (PInfixApp (pvar (name "s")) list_cons_name (pvar (name "sched")))
 initialCall :: ConfigInfo a -> Decl
 initialCall ci =
   nameBind noLoc (name "check") call
@@ -589,7 +601,7 @@ printQCFile ci _
              , "import Data.Maybe"
              , "import System.Directory"
              ]
-    spec =  qcDefsStr
+    spec =    qcDefsStr (qcSamples ci)
             : qcMainStr
             : (prettyPrint  $  runTestDecl ci) : ""
             : arbValStr : ""
@@ -899,8 +911,8 @@ pidToJSONDecl ci =
         mkTy     = name . ("p" ++) . show
 
 -- ### "Static" functions to be included ##################################################
-qcDefsStr="fn          = \"states.json\"\n\
-\sample_size = 100000\n"
+qcDefsStr n ="fn          = \"states.json\"\n\
+\sample_size = " ++ show n ++ "\n"
 
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
