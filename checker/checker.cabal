@@ -23,6 +23,7 @@ data-files:          include/SymMap.hs
                    , include/SymBoilerPlate.hs
                    , include/SymBoilerPlateQC.hs
                    , include/TargetClient.hs
+                   , include/SymQCTH.hs
 library
   exposed-modules:   Symmetry.Language.AST
                    , Symmetry.Language.Syntax

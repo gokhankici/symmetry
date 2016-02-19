@@ -571,12 +571,14 @@ printQCFile ci _
     lhFile = sep (map unlines [header, spec])
     header = [ "{-# Language RecordWildCards #-}"
              , "{-# LANGUAGE OverloadedStrings #-}"
+             , "{-# LANGUAGE TemplateHaskell #-}"
              , "module QC () where"
              , "import SymVector"
              , "import SymVector"
              , "import SymMap"
              , "import SymVerify"
              , "import SymBoilerPlate"
+             , "import SymQCTH"
              , "import Test.QuickCheck"
              , "import Test.QuickCheck.Monadic"
              , "import Data.Aeson"
@@ -903,6 +905,7 @@ qcDefsStr="fn          = \"states.json\"\n\
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
+\          Prelude.putStrLn $(testTH ''State) \n\
 \\n\
 \          inputs  <- generate $ vector sample_size :: IO [State] \n\
 \          results <- mapM runTest inputs \n\

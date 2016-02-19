@@ -121,7 +121,10 @@ run1Cfg opt outd cfg
          copyIncludes opt outd
          writeFile (outd </> "SymVerify.hs") f
          when (optQC opt)
-              (writeFile (outd </> "QC.hs") (printQCFile cinfo' m))
+              (do writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
+                  let f1 = "SymQCTH.hs"
+                  f1' <- getDataFileName ("include" </> f1)
+                  copyFile f1' (outd </> f1))
 
        when (optVerify opt) $
             if optQC opt then
