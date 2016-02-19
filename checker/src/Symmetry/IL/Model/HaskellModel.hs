@@ -558,7 +558,11 @@ printHaskell ci rs = unlines [ header
                        , "import SymVector"
                        , "import SymMap"
                        , "import SymBoilerPlate"
-                       ] ++ (if isQC ci then [] else ["import Language.Haskell.Liquid.Prelude"])
+                       ] ++
+             (if isQC ci
+                 then ["import Test.QuickCheck"
+                      ,"import Test.QuickCheck.Monadic"]
+                 else ["import Language.Haskell.Liquid.Prelude"])
 
     ExpM dl   = deadlockFree ci
     body = unlines [ unlines (prettyPrint <$> initialState ci)
@@ -568,6 +572,7 @@ printHaskell ci rs = unlines [ header
                    , prettyPrint (totalCall ci)
                    , ""
                    , initSpecOfConfig ci
+                   , unlines (prettyPrint <$> arbitraryDecls ci)
                    ]
 
 -- ######################################################################
@@ -583,14 +588,13 @@ printQCFile ci _
     lhFile = sep (map unlines [header, spec])
     header = [ "{-# Language RecordWildCards #-}"
              , "{-# LANGUAGE OverloadedStrings #-}"
-             , "{-# LANGUAGE TemplateHaskell #-}"
              , "module QC () where"
              , "import SymVector"
              , "import SymVector"
              , "import SymMap"
              , "import SymVerify"
              , "import SymBoilerPlate"
-             , "import SymQCTH"
+             , "import TargetClient"
              , "import Test.QuickCheck"
              , "import Test.QuickCheck.Monadic"
              , "import Data.Aeson"
@@ -605,14 +609,11 @@ printQCFile ci _
             : qcMainStr
             : (prettyPrint  $  runTestDecl ci) : ""
             : arbValStr : ""
-            : arbVecStr : ""
-            : sep (prettyPrint <$> arbitraryDecls ci)
+            : arbVecStr : "" : []
             ++ sep (prettyPrint <$> jsonDecls ci)
 
 emptyListCon = Con . Special $ ListCon
 unitCon      = Con . Special $ UnitCon
-
-ifQC ci x = [x | isQC ci]
 
 infix_syn sym f g = InfixApp f (QConOp . UnQual $ Symbol sym) g
 fmap_syn          = infix_syn "<$>"
@@ -917,7 +918,7 @@ qcDefsStr n ="fn          = \"states.json\"\n\
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
-\          Prelude.putStrLn $(testTH ''State) \n\
+\          testTargetClient \n\
 \\n\
 \          inputs  <- generate $ vector sample_size :: IO [State] \n\
 \          results <- mapM runTest inputs \n\

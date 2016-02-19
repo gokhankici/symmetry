@@ -113,6 +113,11 @@ runQC fp cwd
   where
     cmd = shell (printf "runghc %s" fp)
 
+copyOtherQCIncludes d =
+  forM_ fns $ \fn -> do f <- getDataFileName ("include" </> fn)
+                        copyFile f (d </> fn)
+  where fns = ["SymQCTH.hs", "TargetClient.hs"]
+
 run1Cfg :: MainOptions -> FilePath -> Config () -> IO Bool
 run1Cfg opt outd cfg
   = do when (optProcess opt) $
@@ -124,9 +129,7 @@ run1Cfg opt outd cfg
          writeFile (outd </> "SymVerify.hs") f
          when (optQC opt)
               (do writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
-                  let f1 = "SymQCTH.hs"
-                  f1' <- getDataFileName ("include" </> f1)
-                  copyFile f1' (outd </> f1))
+                  copyOtherQCIncludes outd)
 
        when (optVerify opt) $
             if optQC opt then

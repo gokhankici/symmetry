@@ -236,13 +236,15 @@ withStateFields ci f absF pcF ptrF valF intF globF globIntF
        [ globF v | v <- globVals (stateVars ci) ] ++
        [ globIntF v | V v <- setBoundVars ci ])
 
+derivin ci ns = ifQC_l ci $ map (\n -> (UnQual $ name n, [])) ns
+
 stateDecl :: ConfigInfo a
           -> ([Decl], String)
 stateDecl ci
   = ([dataDecl], specStrings)
   where
-    derivin      = [(UnQual $ name "Show", []) | isQC ci] 
-    dataDecl     = DataDecl noLoc DataType [] (name stateRecordCons) [] [stateRecord fs] derivin
+    ds           = derivin ci ["Show", "Eq"]
+    dataDecl     = DataDecl noLoc DataType [] (name stateRecordCons) [] [stateRecord fs] ds
     specStrings  = unlines [ dataReft
                            , ""
                            , recQuals
@@ -284,7 +286,7 @@ pidPreApp ci
 pidDecl :: ConfigInfo a
         -> [Decl]
 pidDecl ci
-  = [ DataDecl noLoc DataType [] (name pidPre) tvbinds cons [(UnQual $ name "Show",[])]
+  = [ DataDecl noLoc DataType [] (name pidPre) tvbinds cons ds
     , TypeDecl noLoc (name pidType) [] (pidPreApp ci)
     ] ++
     (pidFn <$> pids ci)
@@ -300,6 +302,7 @@ pidDecl ci
     tvbinds     = [ UnkindedVar t | (p, t) <- ts, isAbs p  ]
     ts          = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
     mkTy        = name . ("p" ++) . show
+    ds          = derivin ci ["Show", "Eq", "Ord"]
 
 pidFn :: IL.Pid -> Decl
 pidFn p

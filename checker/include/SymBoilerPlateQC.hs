@@ -38,6 +38,7 @@ data Val p = VUnit {}
              | VInR { vInR :: Val p }
              | VInL { vInL :: Val p }
              | VPair { vLeft :: Val p, vRight :: Val p }
+             deriving (Eq)
 
 instance (Show a) => Show (Val a) where
   show VUnit       = "VUnit"

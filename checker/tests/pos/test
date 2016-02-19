@@ -2,17 +2,16 @@
 
 set -e
 
-if [ $# -ne 1 ]; then
+if [ $# -lt 1 ]; then
     echo "usage: test <test hs file>"
     exit 1
 fi
 
 F=$1
 
-stack runghc -- $F --verify --qc
+N=100
+if [ $# -eq 2 ]; then
+	N=$2
+fi
 
-pushd .symcheck
-
-stack runghc -- QC.hs
-
-popd
+stack runghc -- $F --verify --qc --qc-samples $N

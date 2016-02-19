@@ -366,3 +366,6 @@ generateModel c
     c''   = c' {cProcs = [(p,freshStmtIds f s) | (p,s) <- cProcs c']}
     f i a = a { annotId = i }
     cinfo = mkCInfo c''
+
+ifQC   ci x = [x | isQC ci]
+ifQC_l ci x = if isQC ci then x else []
