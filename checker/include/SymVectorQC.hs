@@ -51,22 +51,24 @@ setVec :: Int -> a -> Vec a -> Vec a
 setVec i v (V m) = let m' = Map.insert i v m
                    in  V m'
 
-data Vec2D a = V2D (Int -> Int -> a)
+data Vec2D a = V2D (IntMap (IntMap a))
 {-@
 data Vec2D a <dom :: Int -> Int -> Prop, rng :: Int -> Int -> a -> Prop> = V2D (x:Int -> y:Int -> a<rng x y>)
 @-}
 
 {-@ emptyVec2D :: forall <p :: Int -> Int -> a -> Prop>. Vec2D <{\x y -> 0 = 1},p> a @-}
 emptyVec2D :: Vec2D a
-emptyVec2D = V2D $ \_ -> error "Empty Vec2D"
+emptyVec2D  = V2D Map.empty
 
 {-@ getVec2D :: forall a <r :: Int -> Int -> a -> Prop, d :: Int ->Int -> Prop>.
                 x:Int -> y:Int<d x> -> Vec2D <d,r> a -> a<r x y> @-}
-getVec2D :: Int -> Int -> Vec2D a -> a
-getVec2D x y (V2D f) = f x y
+getVec2D            :: Int -> Int -> Vec2D a -> a
+getVec2D x y (V2D m) = let r = Map.findWithDefault (error "Empty matrix!") x m
+                       in  Map.findWithDefault (error "Empty cell!") y r
 
 {-@ setVec2D :: forall a <r :: Int -> Int -> a -> Prop, d :: Int ->Int -> Prop>.
                 x:Int -> y:Int<d x> -> a:a<r x y> -> Vec2D <\i -> {j:Int<d i> | x = i => y /= j }, r> a -> Vec2D <d,r> a
 @-}
-setVec2D :: Int -> Int -> a -> Vec2D a -> Vec2D a
-setVec2D x y v (V2D f) = V2D $ \i j -> if i == x && j == y then v else f i j
+setVec2D              :: Int -> Int -> a -> Vec2D a -> Vec2D a
+setVec2D x y v (V2D m) = let r = Map.findWithDefault (Map.empty) x m
+                         in V2D (Map.insert x (Map.insert y v r) m)

@@ -572,8 +572,7 @@ printHaskell ci rs = unlines [ header
                    , prettyPrint (totalCall ci)
                    , ""
                    , initSpecOfConfig ci
-                   , unlines (prettyPrint <$> arbitraryDecls ci)
-                   ]
+                   ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
 
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
