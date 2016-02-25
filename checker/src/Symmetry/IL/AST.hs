@@ -156,7 +156,7 @@ type MValMap = M.Map MConstr VId -- No variables
 
 type MTypeEnv = M.Map TId MType
 
-class Identable a where
+class Eq a => Identable a where
   ident :: a -> Int
 
 instance Identable Int where
@@ -192,21 +192,20 @@ data Stmt a = Skip { annot :: a }
                    , annot    :: a
                    }
 
-            {-used to create a loop with the given label-}
             | Loop { loopVar  :: LVar
-                    , loopBody :: Stmt a
-                    , annot    :: a
-                    }
-
-            | Choose { chooseVar :: Var
-                      , chooseSet :: Set
-                      , chooseBody :: Stmt a
-                      , annot      :: a
-                      }
+                   , loopBody :: Stmt a
+                   , annot    :: a
+                   }
 
             | Goto { varVar :: LVar
                    , annot  :: a
                    }
+
+            | Choose { chooseVar :: Var
+                     , chooseSet :: Set
+                     , chooseBody :: Stmt a
+                     , annot      :: a
+                     }
 
             | Assert { assertPred :: Pred
                       , annot :: a
@@ -354,11 +353,10 @@ instance Traversable Stmt where
   traverse _ _
     = error "traverse undefined for non-source stmts"
 
-joinMaps :: I.IntMap [a] -> I.IntMap [a] -> I.IntMap [a]
-joinMaps = I.unionWith (++)
-
-addNext :: Int -> [a] -> I.IntMap [a] -> I.IntMap [a]
-addNext i is = I.alter (fmap (++is)) i
+joinMaps :: Eq a => I.IntMap [a] -> I.IntMap [a] -> I.IntMap [a]
+joinMaps m m' = I.unionWith (foldl' go) m m'
+  where
+    go is i = if i `elem` is then is else  i:is
 
 stmt :: (TId, [(CId, MConstr)], Stmt a) -> Stmt a
 stmt (_,_,s) = s
@@ -390,7 +388,7 @@ singleton i j
   | i == ident j = I.empty
   | otherwise    = I.fromList [(i, [j])]
 
-nextStmts :: (Data a, Identable a)
+nextStmts :: forall a. (Typeable a, Data a, Identable a)
           => Int -> Stmt a -> I.IntMap [Stmt a]
 nextStmts toMe s@(NonDet ss i)
   = foldl' (\m -> joinMaps m . nextStmts (ident i))
@@ -405,9 +403,13 @@ nextStmts toMe s@Block { blkBody = ss }
     go (ins, m) s'
       = (annots s', foldl' joinMaps m (doMaps s' <$> ins))
     doMaps s' i    = nextStmts i s'
-    annots (NonDet ts _) = ident <$> ts
+    annots (NonDet ts _) = [ ident i | i <- concatMap lastStmts ts ]
     annots s'@Case {}    = ident <$> lastStmts s'
+    annots s'@Choose{}   = ident <$> lastStmts s'
+    annots s'@Loop{}     = ident <$> [ s'' | s'' <- lastStmts s', notGoto s'']
     annots s'            = [ident s']
+    notGoto Goto{}       = False
+    notGoto _            = True
 
 nextStmts toMe s@(Iter _ _ t _)
   = singleton toMe s `joinMaps`
@@ -417,12 +419,16 @@ nextStmts toMe s@(Iter _ _ t _)
 nextStmts toMe me@(Loop v s _)
   = singleton toMe me `joinMaps`
     I.fromList [(j, [me]) | j <- js ] `joinMaps`
-    nextStmts (ident s) s
+    nextStmts (ident me) s
   where
-    js = [ j | Goto v' j <- listify (const True) s, v' == v]
+    js = everything (++) (mkQ [] go) s
+    go :: Stmt a -> [Int]
+    go s'@Goto{} | varVar s' == v = [ident s']
+    go _                          = [] 
 
 nextStmts toMe me@(Choose _ _ s _)
-  = addNext toMe [me] $ nextStmts (ident me) s
+  = singleton toMe me `joinMaps` nextStmts (ident me) s
+
 nextStmts toMe me@(Case _ _ _ sl sr _)
   = singleton toMe me `joinMaps`
     nextStmts (ident me) sl `joinMaps`
