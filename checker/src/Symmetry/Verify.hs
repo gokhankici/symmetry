@@ -77,7 +77,7 @@ copyMapModule opt d
   = do let f' = if optQC opt
                    then "SymMapQC.hs"
                    else "SymMap.hs"
-       f <- getDataFileName ("include" </> f')
+       f <- getDataFileName ("checker" </> "include" </> f')
        copyFile f (d </> "SymMap.hs")
 
 copyVectorModule opt d
@@ -85,7 +85,7 @@ copyVectorModule opt d
        let f' = if optQC opt
                    then "SymVectorQC.hs"
                    else "SymVector.hs"
-       f <- getDataFileName ("include" </> f')
+       f <- getDataFileName ("checker" </> "include" </> f')
        copyFile f (d </> "SymVector.hs")
 
 copyBoilerModule opt d
@@ -93,13 +93,22 @@ copyBoilerModule opt d
        let f' = if optQC opt
                    then "SymBoilerPlateQC.hs"
                    else "SymBoilerPlate.hs"
-       f <- getDataFileName ("include" </> f')
+       f <- getDataFileName ("checker" </> "include" </> f')
        copyFile f (d </> "SymBoilerPlate.hs")
+
+copyWeb _ d
+  = forM_ ["states.js", "states.html"] $ \f -> 
+       do f' <- fn f
+          copyFile f' (d </> f)
+  where
+    fn f = getDataFileName ("checker" </> "include" </> f)
 
 copyIncludes opt d =
   mapM_ (\f -> f opt d) [ copyMapModule
                         , copyVectorModule
-                        , copyBoilerModule ]
+                        , copyBoilerModule
+                        , copyWeb
+                        ]
 
 runLiquid :: FilePath -> FilePath -> IO () 
 runLiquid fp cwd
