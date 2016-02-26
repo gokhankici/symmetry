@@ -3,18 +3,20 @@
 module SymQCTH where
 
 import Language.Haskell.TH
+import Data.Maybe
 
-testTH :: Name -> Q Exp
-testTH n = do rfs <- fmap getRecordFields $ reify n
-              litE . stringL $ show rfs
+testTH  :: Name -> Q Exp
+testTH n = fmap getRecordFields $ reify n
 
-getRecordFields :: Info -> [(String, [(String, String)])]
-getRecordFields (TyConI (DataD _ _ _ cons _)) = concatMap getRF' cons
-getRecordFields _ = []
+getRecordFields :: Info -> Exp -- [(String, [(String, String)])]
+getRecordFields (TyConI (DataD _ _ _ cons _)) = ListE (concatMap getRF' cons)
+getRecordFields _                             = ListE []
 
-getRF' :: Con -> [(String, [(String, String)])]
-getRF' (RecC name fields) = [(nameBase name, map getFieldInfo fields)]
-getRF' _ = []
+getRF' :: Con -> [Exp] -- [(String, [(String, String)])]
+getRF' (RecC name fields) = [TupE [ LitE . StringL $ nameBase name
+                                  , ListE (map getFieldInfo fields)]]
+getRF' _                  = []
 
-getFieldInfo :: (Name, Strict, Type) -> (String, String)
-getFieldInfo (name, _, ty) = (nameBase name, show ty)
+getFieldInfo :: (Name, Strict, Type) -> Exp -- (String, String)
+getFieldInfo (name, _, ty) = TupE [ LitE . StringL $ nameBase name
+                                  , LitE . StringL $ show ty ]

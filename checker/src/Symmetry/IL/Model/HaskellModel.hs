@@ -639,6 +639,7 @@ printQCFile ci _
             : arbValStr : ""
             : arbVecStr : "" : []
             ++ sep (prettyPrint <$> jsonDecls ci)
+            ++ [(prettyPrint $ showAbss ci)]
 
 emptyListCon = Con . Special $ ListCon
 unitCon      = Con . Special $ UnitCon
@@ -982,3 +983,32 @@ arbValStr = "instance (Arbitrary a) => Arbitrary (Val a) where \n\
 arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \   arbitrary = do a <- arbitrary \n\
 \                  return $ mkVec a\n"
+
+showAbss ci = FunBind [mabs, mpcs, mptrs, mvals]
+  where mabs    = Match noLoc (name "thisAbs")  [] Nothing (pickThing "abs") Nothing
+        mpcs    = Match noLoc (name "thisPcs")  [] Nothing (pickThing "pc")  Nothing
+        mptrs   = Match noLoc (name "thisPtrs") [] Nothing (pickThing "ptr") Nothing
+        mvals   = Match noLoc (name "thisVals") [] Nothing (pickThing "val") Nothing
+
+        things  = withStateFields ci concat absF pcF ptrF valF intF globF globIntF
+
+        -- bound: Int, unfold: Int, pc: Map Int Int
+        absF     _ b unf pcv = [("abs", tuple $ map strE [b,unf,pcv])]
+        -- pid name, is class?
+        pcF      p pcN       = [("pc", tuple [strE pcN, pcIsAbs p])]
+        -- read and write buffers, is class ?
+        ptrF     p r w       = [("ptr", tuple [strE r, strE w, pcIsAbs p])]
+        --
+        valF     p v         = [("val", tuple [strE v, pcIsAbs p])]
+        intF     _ _         = []
+        globF    _           = []
+        globIntF _           = []
+
+        -- valF   = liftMap (valHType ci)
+        -- liftMap t p v = [([name v], if isAbs p then mapType intType t else t)]
+
+        pickThing i = UnGuardedRhs $ listE
+                                   $ map    (\(_,e) -> e)
+                                   $ filter (\(x,_) -> x==i) things
+
+        pcIsAbs p = if isAbs p then intE 0 else intE 1

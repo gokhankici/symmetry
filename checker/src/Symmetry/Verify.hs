@@ -123,7 +123,7 @@ runQC fp cwd
     cmd = shell (printf "runghc %s" fp)
 
 copyOtherQCIncludes d =
-  forM_ fns $ \fn -> do f <- getDataFileName ("include" </> fn)
+  forM_ fns $ \fn -> do f <- getDataFileName ("checker" </> "include" </> fn)
                         copyFile f (d </> fn)
   where fns = ["SymQCTH.hs", "TargetClient.hs"]
 
