@@ -45,7 +45,7 @@ instance Options MainOptions where
                   <*> simpleOption "dump-model" False "Dump Liquid Haskell model"
                   <*> simpleOption "outdir" ".symcheck" "Directory to store intermediate results"
 
-runCmd               :: Bool -> String -> FilePath -> CreateProcess -> IO ()
+runCmd               :: Bool -> String -> FilePath -> CreateProcess -> IO Bool
 runCmd verb pre wd c
   = do (_,Just hout,Just herr,p) <- createProcess c { cwd = Just wd
                                                     , std_out = CreatePipe
@@ -60,19 +60,21 @@ runCmd verb pre wd c
            putStr ("\n" ++ output)
          setSGR [Reset]
 
-       checkExit p herr
+       b <- checkExit p herr
 
        when verb $ do
          setSGR [SetConsoleIntensity FaintIntensity]
          putStr "DONE.\n"
          setSGR [Reset]
+
+       return b
   where
     checkExit x h = do e <- waitForProcess x
                        case e of
-                         ExitSuccess -> return ()
+                         ExitSuccess -> return True
                          _           -> do
                            putStrLn =<< hGetContents h
-                           exitWith (ExitFailure 126)
+                           return False
 copyMapModule opt d
   = do let f' = if optQC opt
                    then "SymMapQC.hs"
@@ -110,23 +112,31 @@ copyIncludes opt d =
                         , copyWeb
                         ]
 
-runLiquid :: FilePath -> FilePath -> IO () 
-runLiquid fp cwd
-  = runCmd True "Running Verifier" cwd cmd
+runLiquid :: Bool -> FilePath -> FilePath -> IO Bool
+runLiquid verb fp cwd
+  = runCmd verb "Running Verifier" cwd cmd
   where
     cmd = shell (printf "liquid %s" fp)
 
-runQC :: FilePath -> FilePath -> IO ()
-runQC fp cwd
-  = runCmd True "Running QuickCheck" cwd cmd
+runQC :: Bool -> FilePath -> FilePath -> IO Bool
+runQC verb fp cwd
+  = runCmd verb "Running QuickCheck" cwd cmd
   where
     cmd = shell (printf "runghc %s" fp)
+
 
 copyOtherQCIncludes d =
   forM_ fns $ \fn -> do f <- getDataFileName ("checker" </> "include" </> fn)
                         copyFile f (d </> fn)
   where fns = ["SymQCTH.hs", "TargetClient.hs"]
 
+runVerifier opt outd
+ | optVerify opt && optQC opt =
+    runQC (optVerbose opt) (outd </> "QC.hs") outd
+ | optVerify opt =
+    runLiquid (optVerbose opt) (outd </> "SymVerify.hs") outd
+ | otherwise = return True
+  
 run1Cfg :: MainOptions -> FilePath -> Config () -> IO Bool
 run1Cfg opt outd cfg
   = do when (optProcess opt) $
@@ -140,12 +150,7 @@ run1Cfg opt outd cfg
               (do writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
                   copyOtherQCIncludes outd)
 
-       when (optVerify opt) $
-            if optQC opt then
-              runQC (outd </> "QC.hs") outd
-            else
-              runLiquid (outd </> "SymVerify.hs") outd
-       return True
+       runVerifier opt outd
   where
     cinfo :: ConfigInfo (PredAnnot Int)
     (cinfo, m) = generateModel cfg
