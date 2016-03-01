@@ -12,6 +12,8 @@ import SymVerify
 import SymBoilerPlate
 import SymQCTH
 
+import Test.QuickCheck
+import Data.List
 import Control.Monad
 import Language.Haskell.TH hiding (Pred)
 
@@ -29,8 +31,8 @@ data AIntOp = AIntEq -- =
 
 data AIntV = APC  String     -- Int
            | AVar String     -- Int
-           | AVal String     -- Val Int
-           | APtr String Int -- Map_t Int Int
+           | AVal String     -- Val Pid
+           | APtr String Int -- Int
            deriving (Show)
 
 data AInt = AIntSingle AIntV     -- for a single process
@@ -49,7 +51,34 @@ data Pred = AtomP Atom
 data Grammar = Imp Pred Pred
              deriving (Show)
 
+isAbs n = let (_,_,b) = head $ filter (\(_,n',_) -> n' == n) thisPids
+          in b
+
+uncurry3 f (x,y,z) = f x y z
+
 testTargetClient :: IO ()
 testTargetClient  = do let [(s,ts)] = $(testTH ''State)
                        forM_ ts (putStrLn . show)
+                       pred <- generate lhs_gen
+                       putStrLn $ show pred
                        return ()
+
+lhs_gen :: Gen Pred
+lhs_gen =  do len   <- frequency (zip freqs sizes)
+              pc_ts <- shuffle thisPcs >>= return . (take len)
+
+              let pcs = mkpc <$> pc_ts
+                  ops = const AIntEq <$> pc_ts
+                  ns  = AConst . (const (-1)) <$> pc_ts
+                  h:t = map (uncurry3 IntCmp) (zip3 pcs ops ns)
+
+              return $ foldl' (\prev p -> AndP prev (AtomP p)) (AtomP h) t
+
+              where freqs = if length thisPcs < 3 then [2,3] else [2,3,1]
+                    sizes = map return [1..3]
+                    mkpc (s,n) = if isAbs n
+                                    then AIntSingle (APC s)
+                                    else AIntClass  (APC s) 0
+
+main :: IO ()
+main  = testTargetClient

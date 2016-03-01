@@ -582,10 +582,15 @@ printHaskell ci rs = unlines [ header
                              ]
   where
     header = unlines $ [ "{-# Language RecordWildCards #-}"
+                       , "{-# Language OverloadedStrings #-}"
                        , "module SymVerify where"
                        , "import SymVector"
                        , "import SymMap"
                        , "import SymBoilerPlate"
+                       , "import Data.Aeson"
+                       , "import Data.Aeson.Encode.Pretty"
+                       , "import Control.Monad"
+                       , "import Data.HashMap.Strict as H hiding (map,filter,null)"
                        ] ++
              (if isQC ci
                  then ["import Test.QuickCheck"
@@ -601,7 +606,8 @@ printHaskell ci rs = unlines [ header
                    , ""
                    , initSpecOfConfig ci
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
-
+                     ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
+                     ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls ci)
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
 -- ######################################################################
@@ -621,14 +627,12 @@ printQCFile ci _
              , "import SymMap"
              , "import SymVerify"
              , "import SymBoilerPlate"
-             , "import TargetClient"
              , "import Test.QuickCheck"
              , "import Test.QuickCheck.Monadic"
              , "import Data.Aeson"
              , "import Data.Aeson.Encode.Pretty"
              , "import Control.Monad"
              , "import Data.ByteString.Lazy.Char8 as C (putStrLn, writeFile, appendFile, readFile)"
-             , "import Data.HashMap.Strict as H hiding (map,filter,null)"
              , "import Data.Maybe"
              , "import Data.String"
              , "import System.Directory"
@@ -638,8 +642,6 @@ printQCFile ci _
             : (prettyPrint  $  runTestDecl ci) : ""
             : arbValStr : ""
             : arbVecStr : "" : []
-            ++ sep (prettyPrint <$> jsonDecls ci)
-            ++ [(prettyPrint $ showAbss ci)]
 
 emptyListCon = Con . Special $ ListCon
 unitCon      = Con . Special $ UnitCon
@@ -958,7 +960,6 @@ qcDefsStr n = unlines [ "fn = \"states.json\""
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
-\          testTargetClient \n\
 \\n\
 \          inputs  <- generate $ vector sample_size :: IO [State] \n\
 \          results <- mapM runTest inputs \n\
@@ -984,31 +985,48 @@ arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \   arbitrary = do a <- arbitrary \n\
 \                  return $ mkVec a\n"
 
-showAbss ci = FunBind [mabs, mpcs, mptrs, mvals]
-  where mabs    = Match noLoc (name "thisAbs")  [] Nothing (pickThing "abs") Nothing
-        mpcs    = Match noLoc (name "thisPcs")  [] Nothing (pickThing "pc")  Nothing
-        mptrs   = Match noLoc (name "thisPtrs") [] Nothing (pickThing "ptr") Nothing
-        mvals   = Match noLoc (name "thisVals") [] Nothing (pickThing "val") Nothing
+showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
+  where mabs   = Match noLoc (name "thisAbs")    [] Nothing (pickThing "abs")   Nothing
+        mpcs   = Match noLoc (name "thisPcs")    [] Nothing (pickThing "pc")    Nothing
+        mptrs  = Match noLoc (name "thisPtrs")   [] Nothing (pickThing "ptr")   Nothing
+        mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
+        mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
+        mints  = Match noLoc (name "thisInts")   [] Nothing (pickThing "int")   Nothing
+        mglob  = Match noLoc (name "thisGlobs")  [] Nothing (pickThing "glob")  Nothing
+        mglobi = Match noLoc (name "thisGlobIs") [] Nothing (pickThing "globI") Nothing
 
         things  = withStateFields ci concat absF pcF ptrF valF intF globF globIntF
 
         -- bound: Int, unfold: Int, pc: Map Int Int
-        absF     _ b unf pcv = [("abs", tuple $ map strE [b,unf,pcv])]
+        absF     p b unf pcv = [("abs", tuple $ map strE [b,unf,pcv] ++
+                                                [intE $ pno p])]
         -- pid name, is class?
-        pcF      p pcN       = [("pc", tuple [strE pcN, pcIsAbs p])]
+        pcF      p pcN       = [("pc", tuple [strE pcN, intE $ pno p])]
         -- read and write buffers, is class ?
-        ptrF     p r w       = [("ptr", tuple [strE r, strE w, pcIsAbs p])]
-        --
-        valF     p v         = [("val", tuple [strE v, pcIsAbs p])]
-        intF     _ _         = []
-        globF    _           = []
-        globIntF _           = []
+        ptrF     p r w       = [("ptr", tuple [strE r, strE w, intE $ pno p])]
+        -- pid variables
+        valF     p v         = [("val", tuple [strE v, intE $ pno p])]
+        -- integer variables
+        intF     p v         = [("int", tuple [strE v, intE $ pno p])]
+        -- don't know these at the moment
+        globF    v           = [("glob", strE v)]
+        globIntF v           = [("globI", strE v)]
 
-        -- valF   = liftMap (valHType ci)
-        -- liftMap t p v = [([name v], if isAbs p then mapType intType t else t)]
+        pidNums = zip (pids ci) [0..]
+        pno   p = fpnHelper ts
+                  where ts                = filter (\(p',_) -> p == p') pidNums
+                        fpnHelper [(_,i)] = i
+                        fpnHelper _       = error ("unknown pid: " ++ (show p))
+        pidsE   = UnGuardedRhs $ listE
+                               $ map (\(p,n) -> tuple [ strE (pidConstructor p)
+                                                      , intE n
+                                                      , pcIsAbs p]) pidNums
 
         pickThing i = UnGuardedRhs $ listE
                                    $ map    (\(_,e) -> e)
                                    $ filter (\(x,_) -> x==i) things
 
-        pcIsAbs p = if isAbs p then intE 0 else intE 1
+        pcIsAbs p = if isAbs p then trueE else falseE
+
+        trueE  = Con $ UnQual $ name "True"
+        falseE = Con $ UnQual $ name "False"
