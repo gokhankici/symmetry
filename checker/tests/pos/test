@@ -9,9 +9,10 @@ fi
 
 F=$1
 
-N=100
-if [ $# -eq 2 ]; then
-	N=$2
-fi
+stack build
 
-stack runghc -- $F --verify --qc --qc-samples $N
+stack runghc -- $F --dump-model --qc
+
+cd .symcheck
+stack runghc -- TargetClient.hs
+

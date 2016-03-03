@@ -591,6 +591,7 @@ printHaskell ci rs = unlines [ header
                        , "import Data.Aeson.Encode.Pretty"
                        , "import Control.Monad"
                        , "import Data.HashMap.Strict as H hiding (map,filter,null)"
+                       , "import Data.Map.Strict as M"
                        ] ++
              (if isQC ci
                  then ["import Test.QuickCheck"
@@ -608,6 +609,7 @@ printHaskell ci rs = unlines [ header
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
                      ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls ci)
+                     ++ "\n" ++ stVarDecl
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
 -- ######################################################################
@@ -989,23 +991,31 @@ arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \   arbitrary = do a <- arbitrary \n\
 \                  return $ mkVec a\n"
 
-showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
+stVarDecl="\
+\data StateVar = SInt  {sVarName :: String, sVarAcc  :: State -> Int} \n\
+\              | SInt2 {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n"
+
+mkI p s = if p then mkI2 s else mkI1 s
+mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
+mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
+
+showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mints, mglob, mglobi]
   where mabs   = Match noLoc (name "thisAbs")    [] Nothing (pickThing "abs")   Nothing
         mpcs   = Match noLoc (name "thisPcs")    [] Nothing (pickThing "pc")    Nothing
         mptrs  = Match noLoc (name "thisPtrs")   [] Nothing (pickThing "ptr")   Nothing
-        mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
-        mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
+        --mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
         mints  = Match noLoc (name "thisInts")   [] Nothing (pickThing "int")   Nothing
         mglob  = Match noLoc (name "thisGlobs")  [] Nothing (pickThing "glob")  Nothing
         mglobi = Match noLoc (name "thisGlobIs") [] Nothing (pickThing "globI") Nothing
+        mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
 
         things  = withStateFields ci concat absF pcF ptrF valF intF globF globIntF
 
         -- bound: Int, unfold: Int, pc: Map Int Int
-        absF     p b unf pcv = [("abs", tuple $ map strE [b,unf,pcv] ++
-                                                [intE $ pno p])]
+        absF     p b unf pcv = [("abs", tuple [ tuple [mkI1 b, mkI1 unf, mkI2 pcv]
+                                              , intE (pno p)])]
         -- pid name, is class?
-        pcF      p pcN       = [("pc", tuple [strE pcN, intE $ pno p])]
+        pcF      p pcN       = [("pc", tuple [mkI (isAbs p) pcN, intE $ pno p])]
         -- read and write buffers, is class ?
         ptrF     p r w       = [("ptr", tuple [strE r, strE w, intE $ pno p])]
         -- pid variables
@@ -1021,10 +1031,12 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
                   where ts                = filter (\(p',_) -> p == p') pidNums
                         fpnHelper [(_,i)] = i
                         fpnHelper _       = error ("unknown pid: " ++ (show p))
-        pidsE   = UnGuardedRhs $ listE
-                               $ map (\(p,n) -> tuple [ strE (pidConstructor p)
-                                                      , intE n
-                                                      , pcIsAbs p]) pidNums
+        pidsE   = UnGuardedRhs $ app (var $ name "M.fromList")
+                               $ listE
+                               $ map (\(p,n) -> tuple [ intE n
+                                                      , tuple [ strE (pidConstructor p)
+                                                              , pcIsAbs p
+                                                              ]]) pidNums
 
         pickThing i = UnGuardedRhs $ listE
                                    $ map    (\(_,e) -> e)
