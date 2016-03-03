@@ -1017,7 +1017,8 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mints, mglob, mglobi]
         -- pid name, is class?
         pcF      p pcN       = [("pc", tuple [mkI (isAbs p) pcN, intE $ pno p])]
         -- read and write buffers, is class ?
-        ptrF     p r w       = [("ptr", tuple [strE r, strE w, intE $ pno p])]
+        ptrF     p r w       = let m = mkI (isAbs p)
+                               in [("ptr", tuple [tuple [m r, m w], intE $ pno p])]
         -- pid variables
         valF     p v         = [("val", tuple [strE v, intE $ pno p])]
         -- integer variables
