@@ -69,6 +69,7 @@ instance (FromJSON p) => FromJSON (Val p) where
       | key == "VPair"   -> do (l,r) <- parseJSON val
                                return (VPair l r)
       | otherwise        -> mzero
+    _ -> mzero
 
   parseJSON _ = mzero
 

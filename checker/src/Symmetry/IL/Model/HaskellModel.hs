@@ -623,14 +623,13 @@ printQCFile ci _
     lhFile = sep (map unlines [header, spec])
     header = [ "{-# Language RecordWildCards #-}"
              , "{-# LANGUAGE OverloadedStrings #-}"
-             , "module QC () where"
+             , "module Main where"
              , "import SymVector"
              , "import SymVector"
              , "import SymMap"
              , "import SymVerify"
              , "import SymBoilerPlate"
              , "import Test.QuickCheck"
-             , "import Test.QuickCheck.Monadic"
              , "import Data.Aeson"
              , "import Data.Aeson.Encode.Pretty"
              , "import Control.Monad"
@@ -999,11 +998,11 @@ mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
 mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
 
-showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mints, mglob, mglobi]
+showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
   where mabs   = Match noLoc (name "thisAbs")    [] Nothing (pickThing "abs")   Nothing
         mpcs   = Match noLoc (name "thisPcs")    [] Nothing (pickThing "pc")    Nothing
         mptrs  = Match noLoc (name "thisPtrs")   [] Nothing (pickThing "ptr")   Nothing
-        --mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
+        mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
         mints  = Match noLoc (name "thisInts")   [] Nothing (pickThing "int")   Nothing
         mglob  = Match noLoc (name "thisGlobs")  [] Nothing (pickThing "glob")  Nothing
         mglobi = Match noLoc (name "thisGlobIs") [] Nothing (pickThing "globI") Nothing
@@ -1020,12 +1019,12 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mints, mglob, mglobi]
         ptrF     p r w       = let m = mkI (isAbs p)
                                in [("ptr", tuple [tuple [m r, m w], intE $ pno p])]
         -- pid variables
-        valF     p v         = [("val", tuple [strE v, intE $ pno p])]
+        valF     p v         = [] -- [("val", tuple [strE v, intE $ pno p])]
         -- integer variables
-        intF     p v         = [("int", tuple [strE v, intE $ pno p])]
+        intF     p v         = [("int", tuple [mkI (isAbs p) v, intE $ pno p])]
         -- don't know these at the moment
-        globF    v           = [("glob", strE v)]
-        globIntF v           = [("globI", strE v)]
+        globF    v           = [] -- [("glob", strE v)]
+        globIntF v           = [] -- [("globI", strE v)]
 
         pidNums = zip (pids ci) [0..]
         pno   p = fpnHelper ts

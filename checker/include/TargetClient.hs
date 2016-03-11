@@ -4,42 +4,115 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module TargetClient (testTargetClient) where
+module Main where
 
-import SymVector
 import SymMap
 import SymVerify hiding (check)
-import SymBoilerPlate
 
 import Text.Printf
 import Test.QuickCheck
+import Data.Aeson
+import Data.Function
 import Data.List
 import Control.Monad
 import Data.Map.Strict (findWithDefault)
+import qualified Data.ByteString.Lazy.Char8 as C
+import qualified Data.Set as S
+import Control.Parallel.Strategies
+import Control.DeepSeq
 
 data AIntOp = AIntEq -- =
             | AIntLt -- <
             | AIntLe -- <=
             | AIntGt -- >
             | AIntGe -- >=
+            deriving (Eq,Ord)
 
 data AInt = AIntSingle StateVar      -- for a single process
           | AIntClass  StateVar AInt -- for a process class (map & index)
           | AConst Int               -- 0,1,...
+          deriving (Eq,Ord)
 
 data Atom = IntCmp AInt AIntOp AInt
+            deriving (Eq,Ord)
 
 data Pred = AndP [Atom]
           | NegP Pred
 
-data Grammar = Imp Pred Pred
+data Grammar = Imp { antecedent :: Pred
+                   , consequent :: Pred
+                   }
+               deriving (Eq)
+
+-- implications that have the same antecedent
+data CandGroup = CandGroup { groupAntecedent  :: Pred
+                           , groupConsequents :: [Pred]
+                           }
+                 deriving (Eq)
+
+type Run      = [(State, Pid)]
+type QCResult = (State, Either Run Run)
+
+fn        = "states.json"
+predCount = 10000
+
 
 main :: IO ()
-main  = testTargetClient
+main  = do states <- readStates
+           gs     <- generate (vectorOf predCount grammar_gen)
+           let candidates = groupCandidates gs
+               invariants = fit candidates states
+           printf "size gs = %d\n" (length invariants)
+           forM_ invariants (putStrLn . show)
 
-testTargetClient :: IO ()
-testTargetClient  = do g <- generate grammar_gen
-                       putStrLn $ show g
+
+readStates :: IO [State]
+readStates  =
+  do bs <- C.readFile fn
+     let bs'      = C.drop 1 $ C.dropWhile (/= '\n') bs
+         Just qcs = decode bs' :: Maybe [QCResult]
+         states   = concatMap extractStates qcs
+     return states
+
+  where extractStates (s,e) = s : case e of
+                                    Left r  -> map fst r
+                                    Right r -> map fst r
+
+
+groupCandidates   :: [Grammar] -> [CandGroup]
+groupCandidates gs =
+  let sameAnt          = groupBy ((==) `on` antecedent) $
+                           sortBy (compare `on` antecedent) gs
+      combine cs@(c:_) = CandGroup (antecedent c) (map consequent cs)
+      combine []       = error "empty candidate group consequent"
+  in map combine sameAnt
+
+
+fit              :: [CandGroup] -> [State] -> [CandGroup]
+fit cands states  = let kept_cands         = foldr pruneCandidates cands states
+                        clean_conseqs cond = let old_cs = groupConsequents cond
+                                                 new_cs = (S.toList . S.fromList) old_cs
+                                             in cond { groupConsequents = new_cs }
+                    in map clean_conseqs kept_cands
+
+
+pruneCandidates :: State -> [CandGroup] -> [CandGroup]
+pruneCandidates s cands =
+  filter (not . isTrivial) $ map (pruneConseqs s) cands
+
+
+pruneConseqs :: State -> CandGroup -> CandGroup
+pruneConseqs s cand@(CandGroup a cs) =
+  if check a s
+    then cand {groupConsequents = filter (\p -> check p s) cs}
+    else cand
+
+
+isTrivial cand = null (groupConsequents cand)
+
+-- ######################################################################
+-- Predicate Generation
+-- ######################################################################
 
 grammar_gen :: Gen Grammar
 grammar_gen  = Imp <$> lhs_gen <*> rhs_gen
@@ -61,7 +134,8 @@ lhs_gen =  do len   <- frequency (zip freqs sizes)
                     sizes      = map return [1..3]
                     rand_pc _  = return (AConst (-1))
                     mkpc (v,n) = if isAbs n
-                                    then AIntClass  v (AConst (-1))
+                                    then let k = AIntSingle $ getClassK n
+                                         in AIntClass v k
                                     else AIntSingle v
 
 rhs_gen :: Gen Pred
@@ -120,7 +194,7 @@ instance Checkable Grammar where
   check (Imp l r) s = (not $ check l s) || (check r s)
 
 -- ######################################################################
--- Show instances
+-- Some instances
 -- ######################################################################
 
 instance Show AIntOp where
@@ -145,3 +219,26 @@ instance Show Pred where
 
 instance Show Grammar where
   show (Imp l r) = printf "%s → %s" (show l) (show r)
+
+instance Show CandGroup where
+  show (CandGroup a cs) = printf "%s → %s" (show a) (show cs)
+
+instance NFData State where
+  rnf s = s `seq` ()
+
+instance Eq Pred where
+  (AndP l1) == (AndP l2) = (S.fromList l1) == (S.fromList l2)
+  (NegP p1) == (NegP p2) = p1 == p2
+  _ == _                 = False
+
+instance Ord Pred where
+  compare (AndP l1) (AndP l2) = compare (S.fromList l1) (S.fromList l2)
+  compare (NegP p1) (NegP p2) = compare p1 p2
+  compare (AndP _)  (NegP _)  = LT
+  compare a b                 = compare b a
+
+instance Eq StateVar where
+  (==) s1 s2 = sVarName s1 == sVarName s2
+
+instance Ord StateVar where
+  compare s1 s2 = compare (sVarName s1) (sVarName s2)

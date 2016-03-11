@@ -1,6 +1,5 @@
 module SymMap where
 
-import Data.Maybe
 import Data.Map.Strict as Map
 import Data.Aeson
 import Control.Monad as M
