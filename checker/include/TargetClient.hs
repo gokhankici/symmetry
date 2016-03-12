@@ -1,3 +1,7 @@
+{-
+  1. pc -> # of program counters
+  2.
+-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -36,8 +40,8 @@ data AInt = AIntSingle StateVar      -- for a single process
 data Atom = IntCmp AInt AIntOp AInt
             deriving (Eq,Ord)
 
-data Pred = AndP [Atom]
-          | NegP Pred
+data Pred = AndP { predConjuncts :: [Atom] }
+          | NegP { negatedPred   :: Pred   }
 
 data Grammar = Imp { antecedent :: Pred
                    , consequent :: Pred
@@ -57,13 +61,19 @@ fn        = "states.json"
 predCount = 10000
 
 
+-- ######################################################################
+-- Main loop, finding invariants
+-- ######################################################################
+
+
 main :: IO ()
 main  = do states <- readStates
            gs     <- generate (vectorOf predCount grammar_gen)
-           let candidates = groupCandidates gs
-               invariants = fit candidates states
-           printf "size gs = %d\n" (length invariants)
-           forM_ invariants (putStrLn . show)
+           let candidates  = groupCandidates gs
+               invariants  = fit candidates states
+               passed_imps = finalize invariants
+           printf "size gs = %d\n" (length passed_imps)
+           forM_ passed_imps (putStrLn . show)
 
 
 readStates :: IO [State]
@@ -83,18 +93,19 @@ groupCandidates   :: [Grammar] -> [CandGroup]
 groupCandidates gs =
   let sameAnt          = groupBy ((==) `on` antecedent) $
                            sortBy (compare `on` antecedent) gs
-      combine cs@(c:_) = CandGroup (antecedent c) (map consequent cs)
+      combine cs@(c:_) = CandGroup (antecedent c)
+                                   ((S.toList . S.fromList) (map consequent cs))
       combine []       = error "empty candidate group consequent"
   in map combine sameAnt
 
 
 fit              :: [CandGroup] -> [State] -> [CandGroup]
-fit cands states  = let kept_cands         = foldr pruneCandidates cands states
-                        clean_conseqs cond = let old_cs = groupConsequents cond
-                                                 new_cs = (S.toList . S.fromList) old_cs
-                                             in cond { groupConsequents = new_cs }
-                    in map clean_conseqs kept_cands
+fit cands states  = foldr pruneCandidates cands states
 
+finalize      :: [CandGroup] -> [Grammar]
+finalize cands = map toGrammar cands
+                 where toGrammar (CandGroup a cs) =
+                         Imp a (AndP $ (S.toList . S.fromList) (concatMap predConjuncts cs))
 
 pruneCandidates :: State -> [CandGroup] -> [CandGroup]
 pruneCandidates s cands =
@@ -139,24 +150,60 @@ lhs_gen =  do len   <- frequency (zip freqs sizes)
                                     else AIntSingle v
 
 rhs_gen :: Gen Pred
-rhs_gen  = do ptrs <- sequence $ map fptr thisPtrs
-              return (AndP ptrs)
-              where fptr ((r,w),n) =
-                      let ops = [AIntGe, AIntLt]
-                      in if isAbs n
-                         then let k = AIntSingle $ getClassK n
-                              in IntCmp (AIntClass r k)
-                                   <$> elements ops
-                                   <*> return (AIntClass w k)
-                         else IntCmp (AIntSingle r)
-                                <$> elements ops
-                                <*> return (AIntSingle w)
+rhs_gen  = do rw_ptrs <- rw_ptr_gen
+              others  <- listOf atom_gen
+              let atoms = rw_ptrs ++ others
+              return (AndP atoms)
+
+rw_ptr_gen :: Gen [Atom]
+rw_ptr_gen  = sequence $ map fptr thisPtrs
+              where fptr ((r,w),n) = let ops = [AIntGe, AIntLt]
+                                     in if isAbs n
+                                        then let k = AIntSingle $ getClassK n
+                                             in IntCmp (AIntClass r k)
+                                                  <$> elements ops
+                                                  <*> return (AIntClass w k)
+                                        else IntCmp (AIntSingle r)
+                                               <$> elements ops
+                                               <*> return (AIntSingle w)
+
+atom_gen :: Gen Atom
+atom_gen  = do operand1 <- aint_gen
+               operand2 <- aint_gen
+               if operand1 == operand2
+                  then atom_gen
+                  else do op <- op_gen
+                          return $ IntCmp operand1 op operand2
+
+aint_gen :: Gen AInt
+aint_gen  = oneof [abs_gen, ptr_gen, ints_gen]
+
+abs_gen :: Gen AInt
+abs_gen  = elements $ map (AIntSingle . fst3 . fst) thisAbs
+
+ptr_gen :: Gen AInt
+ptr_gen  = elements pointers
+           where pointers         = concatMap getInt thisPtrs
+                 getInt ((r,w),n) = map sVarToInt [(r,n),(w,n)]
+
+ints_gen :: Gen AInt
+ints_gen  = elements (map sVarToInt thisInts)
+
+op_gen :: Gen AIntOp
+op_gen  = elements [AIntEq, AIntLt, AIntLe, AIntGt, AIntGe]
+
+sVarToInt      :: (StateVar,Int) -> AInt
+sVarToInt (v,n) = if isAbs n
+                  then AIntClass  v (AIntSingle $ getClassK n)
+                  else AIntSingle v
 
 -- ######################################################################
 -- Helper functions
 -- ######################################################################
-find' k m = findWithDefault (error $ (show k) ++ " doesn't exist in " ++ (show m)) k m
+find' k m = findWithDefault (error $ (show k) ++ " doesn't exist in " ++ (show m))
+                            (toInteger k) m
 
+isAbs  :: Int -> Bool
 isAbs n = snd $ find' n thisPids
 
 getAbs n    = head $ filter ((== n) . snd) thisAbs
@@ -164,6 +211,7 @@ getClassN n = let (c,_,_) = fst (getAbs n) in c
 getClassK n = let (_,k,_) = fst (getAbs n) in k
 
 uncurry3 f (x,y,z) = f x y z
+fst3 (a,_,_)       = a
 
 -- ######################################################################
 -- Predicate Evaluator

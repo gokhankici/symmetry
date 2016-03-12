@@ -583,6 +583,7 @@ printHaskell ci rs = unlines [ header
   where
     header = unlines $ [ "{-# Language RecordWildCards #-}"
                        , "{-# Language OverloadedStrings #-}"
+                       , "{-# Language ScopedTypeVariables #-}"
                        , "module SymVerify where"
                        , "import SymVector"
                        , "import SymMap"
@@ -622,7 +623,7 @@ printQCFile ci _
     sep    = concatMap (\s -> [s,""])
     lhFile = sep (map unlines [header, spec])
     header = [ "{-# Language RecordWildCards #-}"
-             , "{-# LANGUAGE OverloadedStrings #-}"
+             , "{-# Language OverloadedStrings #-}"
              , "module Main where"
              , "import SymVector"
              , "import SymVector"
@@ -998,15 +999,15 @@ mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
 mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
 
-showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
-  where mabs   = Match noLoc (name "thisAbs")    [] Nothing (pickThing "abs")   Nothing
-        mpcs   = Match noLoc (name "thisPcs")    [] Nothing (pickThing "pc")    Nothing
-        mptrs  = Match noLoc (name "thisPtrs")   [] Nothing (pickThing "ptr")   Nothing
+showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi]
+  where mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
+        mabs   = Match noLoc (name "thisAbs")    [] vvv_i_t (pickThing "abs")   Nothing
+        mpcs   = Match noLoc (name "thisPcs")    [] v_i_t   (pickThing "pc")    Nothing
+        mptrs  = Match noLoc (name "thisPtrs")   [] vv_i_t  (pickThing "ptr")   Nothing
         mvals  = Match noLoc (name "thisVals")   [] Nothing (pickThing "val")   Nothing
-        mints  = Match noLoc (name "thisInts")   [] Nothing (pickThing "int")   Nothing
+        mints  = Match noLoc (name "thisInts")   [] v_i_t   (pickThing "int")   Nothing
         mglob  = Match noLoc (name "thisGlobs")  [] Nothing (pickThing "glob")  Nothing
         mglobi = Match noLoc (name "thisGlobIs") [] Nothing (pickThing "globI") Nothing
-        mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
 
         things  = withStateFields ci concat absF pcF ptrF valF intF globF globIntF
 
@@ -1019,12 +1020,18 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, mvals, mints, mglob, mglobi]
         ptrF     p r w       = let m = mkI (isAbs p)
                                in [("ptr", tuple [tuple [m r, m w], intE $ pno p])]
         -- pid variables
-        valF     p v         = [] -- [("val", tuple [strE v, intE $ pno p])]
+        valF     p v         = [("val", tuple [mkI (isAbs p) v, intE $ pno p])]
         -- integer variables
         intF     p v         = [("int", tuple [mkI (isAbs p) v, intE $ pno p])]
         -- don't know these at the moment
         globF    v           = [] -- [("glob", strE v)]
         globIntF v           = [] -- [("globI", strE v)]
+
+        i_t     = TyVar (name "Int")
+        v_t     = TyVar (name "StateVar")
+        v_i_t   = Just $ TyList $ TyTuple Boxed [v_t, i_t]
+        vv_i_t  = Just $ TyList $ TyTuple Boxed [TyTuple Boxed [v_t, v_t], i_t]
+        vvv_i_t = Just $ TyList $ TyTuple Boxed [TyTuple Boxed [v_t, v_t, v_t], i_t]
 
         pidNums = zip (pids ci) [0..]
         pno   p = fpnHelper ts
