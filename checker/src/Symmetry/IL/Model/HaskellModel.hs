@@ -18,6 +18,7 @@ import           Symmetry.IL.Model.HaskellDefs
 import           Symmetry.IL.Model.HaskellDeadlock
 import           Symmetry.IL.Model.HaskellSpec ( initSpecOfConfig
                                                , withStateFields
+                                               , StateFieldVisitor(..)
                                                )
 
 import Debug.Trace
@@ -167,6 +168,33 @@ hReadMap :: HaskellModel
 hReadMap (ExpM m) (ExpM i)
   = ExpM $ getMap m i
 
+hReadSetBound :: ConfigInfo a
+              -> Pid
+              -> Set
+              -> HaskellModel
+hReadSetBound ci p (S s)
+  = hReadState ci p s
+-- Essentially inlining the var lookup
+hReadSetBound ci p (SV v)
+  = ExpM e
+  where
+    e = caseSplitSets ci p v go
+    go (Known _ i)       = intE (toInteger i)
+    go (Unknown _ (V s)) = vExp s
+hReadSetBound _ _ (SInts s)
+  = hInt s
+
+caseSplitSets :: ConfigInfo a -> Pid -> Var -> (SetBound -> Exp) -> Exp
+caseSplitSets ci p (V v) g
+  = caseE caseExp cases
+  where
+    caseExp             = unExp (hReadState ci p v)
+    (ks, us)            = allSets ci
+    mkAlt b@(Known k i)       = alt noLoc (mkPat k) (g b)
+    mkAlt b@(Unknown u (V v)) = alt noLoc (mkPat u) (g b)
+    mkPat (S u)         = metaConPat setCons [strP u]
+    cases    = mkAlt <$> (ks ++ us)
+
 hReadRoleBound :: ConfigInfo a
                -> Pid
                -> HaskellModel
@@ -187,15 +215,18 @@ hAdd (ExpM e1) (ExpM e2)
 
 hSetFields :: ConfigInfo a
            -> Pid
+           -> Pid
            -> [(String, HaskellModel)]
            -> HaskellModel
-hSetFields ci (PConc _) ups
+hSetFields ci p (PConc _) ups
   = StateUpM [ (f, e) | (f, ExpM e) <- ups ] []
-hSetFields ci p ups
-  = StateUpM [ (f, putMap (vExp f) (vExp $ pidIdx p) e) | (f, ExpM e) <- ups ] []
+hSetFields ci p q@(PAbs (V v) _) ups
+  = StateUpM [ (f, putMap (vExp f) (unExp $ hReadState ci p v) e) | (f, ExpM e) <- ups] []
+hSetFields ci _ q ups
+  = StateUpM [ (f, putMap (vExp f) (vExp $ pidIdx q) e) | (f, ExpM e) <- ups ] []
 
 hSetPC ci p e
-  = hSetFields ci p [(pc p, e)]
+  = hSetFields ci p p [(pc p, e)]
 
 hSetPCCounter :: ConfigInfo a
               -> Pid
@@ -230,14 +261,15 @@ hExpr :: Bool -> ConfigInfo a -> Pid -> ILExpr -> HaskellModel
 hExpr _ _ _ EUnit    = ExpM $ con unitCons    
 hExpr _ _ _ EString  = ExpM $ App (con stringCons) (strE "<str>")
 hExpr _ _ _ (EInt i) = hInt i
+hExpr _ _ _ (ESet (S s))
+  = ExpM $ app (con setCons) (strE s)
+hExpr b ci p (ESet (SV v))
+  = hExpr b ci p (EVar v)
 hExpr _ ci p (EPid q@(PAbs (V v) _))
   = ExpM $ App (con pidCons) (App (vExp $ pidConstructor q) (unExp $ readState ci p v))
 hExpr _ _ _ (EPid q)
   = ExpM $ App (con pidCons) (pidExp q)
--- hExpr _ _ _ (EPid q@(PConc _))
---   = ExpM $ App (con pidCons) (vExp $ pidConstructor q)
--- hExpr _ _ _ (EPid q@(PAbs _ _))
---   = ExpM $ App (con pidCons) (App (vExp $ pidConstructor q) (vExp $ pidIdx q))
+
 hExpr _ _ _ (EVar (GV v))
   = ExpM . vExp $ v
 hExpr _ ci p (EVar (VPtrR t))
@@ -295,16 +327,20 @@ hReadPtrR ci p t
   = hReadState ci p (ptrR ci p t)
 
 hIncrPtrR ci p t
-  = hSetFields ci p [(ptrR ci p t, hIncr ptrRExp)]
+  = hSetFields ci p p [(ptrR ci p t, hIncr ptrRExp)]
   where
     ptrRExp = hReadPtrR ci p t
 
 hIncrPtrW ci p q t
-  = hSetFields ci q [(ptrW ci q t, hIncr ptrWExp)]
+  = hSetFields ci p q [(ptrW ci q t, hIncr ptrWExp)]
   where
     ptrWExp = hReadPtrW ci p q t
 
-hReadPtrW ci p q t
+hReadPtrW ci p q@(PAbs (V v) _) t
+  = ExpM $ getMap (vExp (ptrW ci q t)) i
+  where
+    i = unExp $ hReadState ci p v
+hReadPtrW ci _ q t
   = hReadState ci q (ptrW ci q t)
 
 hPutMessage ci p q (e,t)
@@ -313,12 +349,12 @@ hPutMessage ci p q (e,t)
     ExpM e' = hExpr True ci p e
 
 hGetMessage ci p@PConc{} (V v, t)
-  = hSetFields ci p [(v, ExpM $ getVec (vExp (buf ci p t)) e')]
+  = hSetFields ci p p [(v, ExpM $ getVec (vExp (buf ci p t)) e')]
   where
     ExpM e' = hReadPtrR ci p t
 
 hGetMessage ci p@(PAbs (GV i) _) (V v, t)
-  = hSetFields ci p [(v, ExpM $ getVec2D (vExp (buf ci p t)) (vExp i) e')]
+  = hSetFields ci p p [(v, ExpM $ getVec2D (vExp (buf ci p t)) (vExp i) e')]
   where
     ExpM e' = hReadPtrR ci p t
 
@@ -386,6 +422,7 @@ instance ILModel HaskellModel where
   false      = hFalse
   ite        = hIte
   readMap    = hReadMap
+  readSetBound = hReadSetBound
   readState  = hReadState
   readPtrR   = hReadPtrR
   readPtrW   = hReadPtrW
@@ -419,6 +456,8 @@ ilExpPat (ELeft (EVar v))
   = PApp (UnQual (name leftCons)) [varPat v]
 ilExpPat (ERight (EVar v))
   = PApp (UnQual (name rightCons)) [varPat v]
+ilExpPat (ESet (S n))
+  = metaConPat setCons [strP n]
 ilExpPat e
   = error (printf "ilExpPath TODO(%s)" (show e))
 
@@ -491,8 +530,8 @@ mkCall ci p e fups bufups
       = [ findUp p t bufups | p <- pids ci, t <- fst <$> tyMap ci]
     mkFieldUp _ f e
       = FieldUpdate (UnQual (name f)) e
-    findUp p t bufups
-      = maybe (vExp $ buf ci p t) (\(p, e) -> updateBuf ci p t e) $ findUpdate p t bufups
+    findUp q t bufups
+      = maybe (vExp $ buf ci q t) (\(q, e) -> updateBuf ci p q t e) $ findUpdate q t bufups
 
 
 mkAssert (Just (ExpM e)) k
@@ -500,23 +539,35 @@ mkAssert (Just (ExpM e)) k
 mkAssert Nothing k
   = k
 
-updateBuf :: ConfigInfo a -> Pid -> IL.Type -> Exp -> Exp
-updateBuf ci p@(PAbs _ _) t e
+updateBuf :: ConfigInfo a -> Pid -> Pid -> IL.Type -> Exp -> Exp
+updateBuf ci p q@(PAbs (V idx) _) t e
   = putVec2D v i j e 
     where
-      v = vExp $ buf ci p t
-      i = vExp $ pidIdx p
-      j = getMap (vExp $ ptrW ci p t) (vExp $ pidIdx p)
-updateBuf ci p t e
+      v = vExp $ buf ci q t
+      i = if isAbs p then
+            unExp (hReadState ci p idx)
+          else
+            vExp $ pidIdx q
+      j = if isAbs p then
+            getMap (vExp $ ptrW ci q t) (unExp (hReadState ci p idx))
+          else
+            getMap (vExp $ ptrW ci q t) (vExp $ pidIdx q)
+updateBuf ci p q@(PAbs _ _) t e
+  = putVec2D v i j e 
+    where
+      v = vExp $ buf ci q t
+      i = vExp $ pidIdx q
+      j = getMap (vExp $ ptrW ci q t) (vExp $ pidIdx q)
+updateBuf ci p q t e
   = putVec v i e
   where
-    v = vExp $ buf ci p t
-    i = vExp $ ptrW ci p t
+    v = vExp $ buf ci q t
+    i = vExp $ ptrW ci q t
           
 
 findUpdate :: Pid -> IL.Type -> [((Pid, IL.Type), Exp)] -> Maybe (Pid, Exp)
-findUpdate (PAbs _ (S s)) t bufups
-  = case [ (p, e) | ((p@(PAbs _ (S s')), t'), e) <- bufups, s == s', t == t' ] of
+findUpdate (PAbs _ s) t bufups
+  = case [ (p, e) | ((p@(PAbs _ s'), t'), e) <- bufups, s == s', t == t' ] of
       []  -> Nothing
       x:_ -> Just x
 findUpdate p t bufups
@@ -747,11 +798,23 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
         genExp    = UnGuardedRhs $ Do (bs ++ [retState])
         retState  = Qualifier (metaFunction "return" [recExp])
         recExp    = RecConstr (UnQual (name stateRecordCons)) [FieldWildcard]
-        bs        = withStateFields ci concat absArb arbPC arbPtr arbVal arbInt arbGlobVal arbGlob
+        bs        = withStateFields ci SFV { combine = concat
+                                           , absF = absArb
+                                           , pcF = arbPC
+                                           , ptrF = arbPtr
+                                           , valF = arbVal
+                                           , intF = arbInt
+                                           , globF = arbGlobVal
+                                           , globIntF = arbGlob
+                                           }
         bind v e  = Generator noLoc (pvar (name v)) e
         bindBound v e = case setBound ci (S v) of
-                          Just (Known _ i) -> bind v (metaFunction "return" [intE (toInteger i)]) 
-                          _                -> bind v e
+                          Just (Unknown _ (V n)) ->
+                            bind v (metaFunction "return" [vExp n])
+                          Just (Known _ i) ->
+                            bind v (metaFunction "return" [intE (toInteger i)]) 
+                          _                ->
+                            bind v e
         absArb _ b u pc = [ bindBound b arbPos
                           , bind u (arbRange (intE 0) (vExp b))
                           , bind pc (singletonMap (intE 0) (vExp b))
@@ -763,7 +826,7 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
         arbVal p v     = [bind v $ if isAbs p then arbEmptyMap else arbNull]
         arbGlobVal v   = [bind v arbNull]
         arbGlob v      = [bindBound v arbPos | v `notElem` absPidSets ]
-        absPidSets     = [ s | PAbs _ (S s) <- fst <$> cProcs (config ci) ]
+        absPidSets     = [ setName s | PAbs _ s <- fst <$> cProcs (config ci) ]
         singletonMap k v = metaFunction "return"
                              [metaFunction "SymMap.singleton"
                                [k, infixApp v opMinus (intE 1)]]
@@ -812,14 +875,22 @@ stateFromJSONDecl ci =
         -- accessor for each variable
         varParser n = Generator noLoc (pvarn n)
                       (infix_syn ".:" (var $ name "s") (Lit $ String n))
-        -- parser for each variable
-        bs = withStateFields ci concat absFs pcFs ptrFs field field glob glob
+        -- the names of the arguments in the state
+        bs = withStateFields ci SFV { combine = concat
+                                    , absF = absFs
+                                    , pcF = pcFs
+                                    , ptrF = ptrFs
+                                    , valF = field
+                                    , intF = field
+                                    , globF = glob
+                                    , globIntF = glob
+                                    }
         absFs _ x y z = [varParser x, varParser y, varParser z]
         pcFs _ f      = [varParser f]
         ptrFs _ f1 f2 = [varParser f1, varParser f2]
         field _ f     = [varParser f]
         glob f        = [varParser f | f `notElem` absPidSets]
-        absPidSets    = [ s | PAbs _ (S s) <- fst <$> cProcs (config ci) ]
+        absPidSets    = [ setName s | PAbs _ s <- fst <$> cProcs (config ci) ]
 
 
         -- parseJSON _ = mzero
@@ -850,13 +921,21 @@ stateToJSONDecl ci =
         -- exps = map (\(n,_) -> infix_syn ".=" (Lit $ String n) (var $ name n))
         --            (stateVarsNTList ci)
         enc v = infix_syn ".=" (Lit $ String v) (var $ name v)
-        exps = withStateFields ci concat absFs pcFs ptrFs field field glob glob
+        exps =  withStateFields ci SFV { combine = concat
+                                       , absF = absFs
+                                       , pcF = pcFs
+                                       , ptrF = ptrFs
+                                       , valF = field
+                                       , intF = field
+                                       , globF = glob
+                                       , globIntF = glob
+                                       }
         absFs _ x y z = [enc x, enc y, enc z]
         pcFs _ f      = [enc f]
         ptrFs _ f1 f2 = [enc f1, enc f2]
         field _ f     = [enc f]
         glob f        = [enc f | f `notElem` absPidSets]
-        absPidSets    = [ s | PAbs _ (S s) <- fst <$> cProcs (config ci) ]
+        absPidSets    = [ setName s | PAbs _ s <- fst <$> cProcs (config ci) ]
 
         -- parseJSON _ = mzero
         tc_name = UnQual $ name "ToJSON"
@@ -1009,7 +1088,14 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi
         mglob  = Match noLoc (name "thisGlobs")  [] Nothing (pickThing "glob")  Nothing
         mglobi = Match noLoc (name "thisGlobIs") [] Nothing (pickThing "globI") Nothing
 
-        things  = withStateFields ci concat absF pcF ptrF valF intF globF globIntF
+        things = withStateFields ci SFV { combine  = concat
+                                        , absF     = absF
+                                        , pcF      = pcF
+                                        , ptrF     = ptrF
+                                        , valF     = valF
+                                        , intF     = intF
+                                        , globF    = globF
+                                        , globIntF = globIntF }
 
         -- bound: Int, unfold: Int, pc: Map Int Int
         absF     p b unf pcv = [("abs", tuple [ tuple [mkI1 b, mkI1 unf, mkI2 pcv]

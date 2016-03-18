@@ -160,11 +160,6 @@ run1Cfg opt outd cfg
     pprint c = print $
                text "Config" <>
                nest 2 (line  <> pretty c)
-    verb = optVerbose opt
-    fileExists f = catch (openFile f ReadMode >> return True)
-                         (\(_ :: IOException) -> return False)
-    filterBoundedAbs c@(Config { cSets = bs }) =
-      c { cProcs = [ p | p <- cProcs c, not (isBounded bs (fst p)) ] }
 
 
 report status
@@ -191,11 +186,11 @@ checkerMain main
 
       es <- forM cfgs $ run1Cfg optsImplied outd
       let status = and es
-      report status
+
+      when (optVerify opts) $ report status
+
       unless status exitFailure
-
       exitSuccess
-
     where
       cfgs = stateToConfigs . runSymb $ main
 
