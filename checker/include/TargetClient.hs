@@ -88,6 +88,11 @@ main  = do states <- readStates
            let candidates  = groupCandidates gs
                invariants  = fit candidates states
                passed_imps = finalize invariants
+
+           printf "candidates:  %s\n" (show candidates)
+           printf "invariants:  %s\n" (show invariants)
+           printf "passed_imps: %s\n" (show passed_imps)
+
            printf "size gs = %d\n" (length passed_imps)
            forM_ passed_imps (putStrLn . show)
 
