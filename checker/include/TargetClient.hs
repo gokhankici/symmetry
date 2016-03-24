@@ -52,6 +52,7 @@ data Grammar = Imp { antecedent :: Pred
 -- implications that have the same antecedent
 data CandGroup = CandGroup { groupAntecedent  :: Pred
                            , groupConsequents :: [Pred]
+                           , touchedGroup     :: Bool
                            }
 
 type Run      = [(State, Pid)]
@@ -68,33 +69,19 @@ predCount = 10000
 
 main :: IO ()
 main  = do states <- readStates
-           --gs     <- generate (vectorOf predCount grammar_gen)
-           let ((pc0,_):_)      = thisPcs
-               (_:(pc1,_):_)    = thisPcs
-               (((_,k2,_),_):_) = thisAbs
-               ((i0,_):_)       = thisInts
-               (_:(i1,_):_)     = thisInts
-               lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
-                          , IntCmp (AIntClass pc1 (AIntSingle k2)) AIntEq (AConst 0) ]
-               rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
-               rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
+           gs     <- generate (vectorOf predCount grammar_gen)
+           filterGrammars gs states
 
-               gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
-                         rhs1 -- (xl0 ≤ xl1)
-               gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
-                         rhs2 -- (xl0 > xl1)
 
-               gs  = [gs1, gs2]
-           let candidates  = groupCandidates gs
-               invariants  = fit candidates states
-               passed_imps = finalize invariants
-
-           printf "candidates:  %s\n" (show candidates)
-           printf "invariants:  %s\n" (show invariants)
-           printf "passed_imps: %s\n" (show passed_imps)
-
-           printf "size gs = %d\n" (length passed_imps)
-           forM_ passed_imps (putStrLn . show)
+filterGrammars gs states =
+  do let candidates  = groupCandidates gs
+         invariants  = fit candidates states
+         passed_imps = finalize invariants
+     -- printf "candidates:  %s\n" (show candidates)
+     -- printf "invariants:  %s\n" (show invariants)
+     -- printf "passed_imps: %s\n" (show passed_imps)
+     printf "size gs = %d\n" (length passed_imps)
+     forM_ passed_imps (putStrLn . show)
 
 
 readStates :: IO [State]
@@ -116,12 +103,14 @@ groupCandidates gs =
                            sortBy (compare `on` antecedent) gs
       combine cs@(c:_) = CandGroup (antecedent c)
                                    ((S.toList . S.fromList) (map consequent cs))
+                                   False
       combine []       = error "empty candidate group consequent"
   in map combine sameAnt
 
 
 fit              :: [CandGroup] -> [State] -> [CandGroup]
-fit cands states  = foldr pruneCandidates cands states
+fit cands states  = let newCands = foldr pruneCandidates cands states
+                    in  filter touchedGroup newCands
 
 
 pruneCandidates :: State -> [CandGroup] -> [CandGroup]
@@ -130,16 +119,19 @@ pruneCandidates s cands =
 
 
 pruneConseqs :: State -> CandGroup -> CandGroup
-pruneConseqs s cand@(CandGroup a cs) =
-  if check a s
-    then cand {groupConsequents = filter (\p -> check p s) cs}
+pruneConseqs s cand =
+  if check (groupAntecedent cand) s
+    then cand { groupConsequents = filter (\p -> check p s) (groupConsequents cand)
+              , touchedGroup     = True }
     else cand
 
 
 finalize      :: [CandGroup] -> [Grammar]
 finalize cands = map toGrammar cands
-                 where toGrammar (CandGroup a cs) =
-                         Imp a (AndP $ (S.toList . S.fromList) (concatMap predConjuncts cs))
+                 where toGrammar cand =
+                         Imp (groupAntecedent cand)
+                             (AndP $ (S.toList . S.fromList)
+                                       (concatMap predConjuncts (groupConsequents cand)))
 
 
 isTrivial cand = null (groupConsequents cand)
@@ -294,7 +286,12 @@ instance Show Grammar where
   show (Imp l r) = printf "%s → %s" (show l) (show r)
 
 instance Show CandGroup where
-  show (CandGroup a cs) = printf "%s → %s" (show a) (show cs)
+  show cand = let a  = groupAntecedent cand
+                  cs = groupConsequents cand
+              in  printf "%s → %s (%s)" (show a) (show cs)
+                                        (if touchedGroup cand
+                                            then "touched" :: String
+                                            else "untouched")
 
 instance NFData State where
   rnf s = s `seq` ()
@@ -315,3 +312,27 @@ instance Eq StateVar where
 
 instance Ord StateVar where
   compare s1 s2 = compare (sVarName s1) (sVarName s2)
+
+
+-- ######################################################################
+-- Test
+-- ######################################################################
+
+
+testGrammarFilter states =
+  let ((pc0,_):_)      = thisPcs
+      (_:(pc1,_):_)    = thisPcs
+      (((_,k2,_),_):_) = thisAbs
+      ((i0,_):_)       = thisInts
+      (_:(i1,_):_)     = thisInts
+      lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
+                 , IntCmp (AIntClass pc1 (AIntSingle k2)) AIntEq (AConst 0) ]
+      rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
+      rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
+
+      gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+                rhs1 -- (xl0 ≤ xl1)
+      gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+                rhs2 -- (xl0 > xl1)
+      gs  = [gs1, gs2]
+  in filterGrammars gs states
