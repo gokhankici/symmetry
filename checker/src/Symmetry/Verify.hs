@@ -23,8 +23,10 @@ import System.IO
 import System.Process hiding (runCommand)
 import Text.Printf
 import Options
-import Text.PrettyPrint.Leijen  (pretty, nest, text, (<>), line, hPutDoc)
+import Text.PrettyPrint.Leijen  (Pretty, pretty, prettyList, nest, text, (<>), line, hPutDoc)
 import qualified Data.Map.Strict as M
+
+import qualified Data.IntMap.Strict as IM
 
 data MainOptions = MainOptions { optVerify  :: Bool
                                , optQC      :: Bool
@@ -136,9 +138,15 @@ runVerifier opt outd
  | optVerify opt =
     runLiquid (optVerbose opt) (outd </> "SymVerify.hs") outd
  | otherwise = return True
-  
+
+instance (Pretty v) => Pretty (IM.IntMap v) where
+  pretty m = pretty (IM.toList m)
+
+hd (h:_) = h
+hd _     = error "empty list given to hd"
+
 run1Cfg :: MainOptions -> FilePath -> Config () -> IO Bool
-run1Cfg opt outd cfg
+run1Cfg opt outd conf
   = do when (optProcess opt) $
          pprint (config cinfo)
 
@@ -147,13 +155,19 @@ run1Cfg opt outd cfg
          copyIncludes opt outd
          writeFile (outd </> "SymVerify.hs") f
          when (optQC opt)
-              (do writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
+              (do
+                  -- let cfgList = (cfg cinfo')
+                  -- hPutDoc stdout $ pretty cfgList
+                  -- putStrLn ""
+                  -- hPutDoc stdout $ prettyList $ map (\(p, ss) -> (p, maximum (IM.keys ss))) cfgList
+                  -- return ()
+                  writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
                   copyOtherQCIncludes outd)
 
        runVerifier opt outd
   where
     cinfo :: ConfigInfo (PredAnnot Int)
-    (cinfo, m) = generateModel cfg
+    (cinfo, m) = generateModel conf
     cinfo'     = cinfo { isQC = optQC opt
                        , qcSamples = optQCSamples opt}
     f          = printHaskell cinfo' m

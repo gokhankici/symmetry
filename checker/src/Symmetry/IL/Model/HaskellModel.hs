@@ -20,8 +20,8 @@ import           Symmetry.IL.Model.HaskellSpec ( initSpecOfConfig
                                                , withStateFields
                                                , StateFieldVisitor(..)
                                                )
-
-import Debug.Trace
+import qualified Data.IntMap.Strict as IM
+-- import Debug.Trace
 
 ---------------------------------
 -- Wrapper type for Haskell code
@@ -660,6 +660,7 @@ printHaskell ci rs = unlines [ header
                    , initSpecOfConfig ci
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
+                     ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
                      ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls ci)
                      ++ "\n" ++ stVarDecl
 -- ######################################################################
@@ -1078,6 +1079,13 @@ mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
 mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
 
+pno' ci p   = fpnHelper ts
+              where ts                = filter (\(p',_) -> p == p') pidNums
+                    pidNums           = zip (pids ci) [0..]
+                    fpnHelper [(_,i)] = i
+                    fpnHelper _       = error ("unknown pid: " ++ (show p))
+
+showAbss   :: ConfigInfo a -> Decl
 showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi]
   where mpids  = Match noLoc (name "thisPids")   [] Nothing pidsE               Nothing
         mabs   = Match noLoc (name "thisAbs")    [] vvv_i_t (pickThing "abs")   Nothing
@@ -1096,6 +1104,7 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi
                                         , intF     = intF
                                         , globF    = globF
                                         , globIntF = globIntF }
+        pno = pno' ci
 
         -- bound: Int, unfold: Int, pc: Map Int Int
         absF     p b unf pcv = [("abs", tuple [ tuple [mkI1 b, mkI1 unf, mkI2 pcv]
@@ -1119,17 +1128,12 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi
         vv_i_t  = Just $ TyList $ TyTuple Boxed [TyTuple Boxed [v_t, v_t], i_t]
         vvv_i_t = Just $ TyList $ TyTuple Boxed [TyTuple Boxed [v_t, v_t, v_t], i_t]
 
-        pidNums = zip (pids ci) [0..]
-        pno   p = fpnHelper ts
-                  where ts                = filter (\(p',_) -> p == p') pidNums
-                        fpnHelper [(_,i)] = i
-                        fpnHelper _       = error ("unknown pid: " ++ (show p))
         pidsE   = UnGuardedRhs $ app (var $ name "M.fromList")
                                $ listE
-                               $ map (\(p,n) -> tuple [ intE n
-                                                      , tuple [ strE (pidConstructor p)
-                                                              , pcIsAbs p
-                                                              ]]) pidNums
+                               $ map (\p -> tuple [ intE (pno p)
+                                                  , tuple [ strE (pidConstructor p)
+                                                          , pcIsAbs p
+                                                          ]]) (pids ci)
 
         pickThing i = UnGuardedRhs $ listE
                                    $ map    (\(_,e) -> e)
@@ -1139,3 +1143,18 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi
 
         trueE  = Con $ UnQual $ name "True"
         falseE = Con $ UnQual $ name "False"
+
+printPCCounts   :: ConfigInfo a -> Decl
+printPCCounts ci = FunBind [pcs]
+  where pcs  = Match noLoc (name "pcCounts") [] (Just pcsT) pcsE Nothing
+        pcsT = TyApp ( TyApp (TyCon (UnQual (name "M.Map")))
+                             (TyCon (UnQual (name "Integer"))) )
+                     ( TyCon (UnQual (name "Int")) )
+        pcsE = UnGuardedRhs $ app (var $ name "M.fromList")
+                            $ listE
+                            $ map (\(p,ss) -> tuple [ intE (pno p)
+                                                    , let maxPc  = maximum (IM.keys ss)
+                                                          maxPcI = toInteger maxPc
+                                                      in  intE maxPcI ])
+                                  (cfg ci)
+        pno  = pno' ci

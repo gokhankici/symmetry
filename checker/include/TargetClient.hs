@@ -17,6 +17,7 @@ import Text.Printf
 import Test.QuickCheck
 import Data.Aeson
 import Data.Function
+import Data.Ix
 import Data.List
 import Control.Monad
 import Data.Map.Strict (findWithDefault)
@@ -52,7 +53,6 @@ data Grammar = Imp { antecedent :: Pred
 data CandGroup = CandGroup { groupAntecedent  :: Pred
                            , groupConsequents :: [Pred]
                            }
-                 deriving (Eq)
 
 type Run      = [(State, Pid)]
 type QCResult = (State, Either Run Run)
@@ -68,7 +68,23 @@ predCount = 10000
 
 main :: IO ()
 main  = do states <- readStates
-           gs     <- generate (vectorOf predCount grammar_gen)
+           --gs     <- generate (vectorOf predCount grammar_gen)
+           let ((pc0,_):_)      = thisPcs
+               (_:(pc1,_):_)    = thisPcs
+               (((_,k2,_),_):_) = thisAbs
+               ((i0,_):_)       = thisInts
+               (_:(i1,_):_)     = thisInts
+               lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
+                          , IntCmp (AIntClass pc1 (AIntSingle k2)) AIntEq (AConst 0) ]
+               rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
+               rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
+
+               gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+                         rhs1 -- (xl0 ≤ xl1)
+               gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+                         rhs2 -- (xl0 > xl1)
+
+               gs  = [gs1, gs2]
            let candidates  = groupCandidates gs
                invariants  = fit candidates states
                passed_imps = finalize invariants
@@ -102,10 +118,6 @@ groupCandidates gs =
 fit              :: [CandGroup] -> [State] -> [CandGroup]
 fit cands states  = foldr pruneCandidates cands states
 
-finalize      :: [CandGroup] -> [Grammar]
-finalize cands = map toGrammar cands
-                 where toGrammar (CandGroup a cs) =
-                         Imp a (AndP $ (S.toList . S.fromList) (concatMap predConjuncts cs))
 
 pruneCandidates :: State -> [CandGroup] -> [CandGroup]
 pruneCandidates s cands =
@@ -117,6 +129,12 @@ pruneConseqs s cand@(CandGroup a cs) =
   if check a s
     then cand {groupConsequents = filter (\p -> check p s) cs}
     else cand
+
+
+finalize      :: [CandGroup] -> [Grammar]
+finalize cands = map toGrammar cands
+                 where toGrammar (CandGroup a cs) =
+                         Imp a (AndP $ (S.toList . S.fromList) (concatMap predConjuncts cs))
 
 
 isTrivial cand = null (groupConsequents cand)
@@ -143,7 +161,9 @@ lhs_gen =  do len   <- frequency (zip freqs sizes)
 
               where freqs      = if length thisPcs < 3 then [2,3] else [2,3,1]
                     sizes      = map return [1..3]
-                    rand_pc _  = return (AConst (-1))
+                    rand_pc (_,n) = let maxPc  = find' n pcCounts
+                                        allPcs = (range ((-1),maxPc)) :: [Int]
+                                    in elements (AConst <$> allPcs)
                     mkpc (v,n) = if isAbs n
                                     then let k = AIntSingle $ getClassK n
                                          in AIntClass v k
@@ -219,7 +239,7 @@ fst3 (a,_,_)       = a
 
 evalAInt (AConst i) _       = i
 evalAInt (AIntSingle v) s   = (sVarAcc v) s
-evalAInt (AIntClass v i) s = get ((sVarAcc2 v) s) (evalAInt i s)
+evalAInt (AIntClass v i) s  = get ((sVarAcc2 v) s) (evalAInt i s)
 
 evalOp       :: AIntOp -> (Int -> Int -> Bool)
 evalOp AIntEq = (==)
