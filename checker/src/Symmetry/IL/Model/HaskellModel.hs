@@ -2,6 +2,7 @@
 {-# LANGUAGE ParallelListComp #-}
 module Symmetry.IL.Model.HaskellModel where
 
+import qualified Control.Monad.State as S
 import           Data.Generics
 import           Data.List
 import           Data.Maybe
@@ -13,11 +14,12 @@ import           Language.Haskell.Exts.Build
 import           Language.Haskell.Exts.Pretty
 import           Symmetry.IL.AST as IL
 import           Symmetry.IL.Model
+import           Symmetry.IL.Deadlock
 import           Symmetry.IL.ConfigInfo
 import           Symmetry.IL.Model.HaskellDefs
-import           Symmetry.IL.Model.HaskellDeadlock
 import           Symmetry.IL.Model.HaskellSpec ( initSpecOfConfig
                                                , withStateFields
+                                               , defaultVisitor
                                                , StateFieldVisitor(..)
                                                )
 import qualified Data.IntMap.Strict as IM
@@ -54,6 +56,36 @@ cons x y = paren (InfixApp x (QConOp list_cons_name) y)
 
 neg :: Exp
 neg = vExp "not"
+
+setInsert :: Exp -> Exp -> Exp
+setInsert i s
+  = metaFunction "union" [metaFunction "singleton" [i], s]
+
+setDelete :: Exp -> Exp -> Exp
+setDelete i s
+  = metaFunction "difference" [s, metaFunction "singleton" [i]]
+---------------------
+-- Logicify
+---------------------
+logicify :: ConfigInfo a -> Exp -> Exp -> Exp
+logicify ci s e
+  = everywhere (mkT go) e
+  where
+    fields = withStateFields ci defaultVisitor
+    go :: Exp -> Exp
+    go (If e1 e2 e3) = If (p e1) (p e2) (p e3)
+    go e'@(Var (UnQual (Ident i)))
+      | i `elem` fields   = metaFunction i [s]
+      | i == mapGetFn     = vExp $ "Map_select"
+      | i == mapPutFn     = vExp $ "Map_store"
+      | i == "union"      = vExp $ "Set_cup"
+      | i == "difference" = vExp $ "Set_dif"
+      | i == "singleton"  = vExp $ "Set_sng"
+      | otherwise       = e'
+    go e' = e'
+    p e'@(Paren _) = e'
+    p e'           = Paren e'
+      
 
 ---------------------
 -- Program Expressions
@@ -121,14 +153,28 @@ hInt x
   where
     mkInt = intE . toInteger 
 
+hEmptySet :: HaskellModel
+hEmptySet = ExpM (vExp "empty")
+
+hUnion :: HaskellModel -> HaskellModel -> HaskellModel
+hUnion (ExpM e1) (ExpM e2)
+  = ExpM $ metaFunction "union" [e1, e2]
+hUnion e1 e2
+  = error (printf "hUnion %s %s" (show e1) (show e2))
+
 hReadState :: ConfigInfo a
+           -> Pid
            -> Pid
            -> String
            -> HaskellModel
-hReadState _ (PConc _) f
+hReadState _ _ (PConc _) f
   = ExpM $ vExp f
-hReadState _ p f
-  = ExpM $ getMap (vExp f) (vExp (pidIdx p))
+hReadState ci p@(PAbs (GV _) _) q@(PAbs (V idx) _) f
+  = ExpM $ getMap (vExp f) i
+  where
+    ExpM i = hReadState ci p p idx
+hReadState _ p q f
+  = ExpM $ getMap (vExp f) (vExp (pidIdx q))
 
 hIsUnfold ci p@(PAbs (GV v) _)
   = ExpM $ paren (infixApp e1 opEq e2)
@@ -138,9 +184,10 @@ hIsUnfold ci p@(PAbs (GV v) _)
 
 hReadPC :: ConfigInfo a
         -> Pid
+        -> Pid
         -> HaskellModel
-hReadPC ci p
-  = hReadState ci p (pc p)
+hReadPC ci p q
+  = hReadState ci p q (pc q)
 
 hReadPCCounter :: ConfigInfo a
                -> Pid
@@ -173,7 +220,7 @@ hReadSetBound :: ConfigInfo a
               -> Set
               -> HaskellModel
 hReadSetBound ci p (S s)
-  = hReadState ci p s
+  = hReadState ci p p s
 -- Essentially inlining the var lookup
 hReadSetBound ci p (SV v)
   = ExpM e
@@ -188,7 +235,7 @@ caseSplitSets :: ConfigInfo a -> Pid -> Var -> (SetBound -> Exp) -> Exp
 caseSplitSets ci p (V v) g
   = caseE caseExp cases
   where
-    caseExp             = unExp (hReadState ci p v)
+    caseExp             = unExp (hReadState ci p p v)
     (ks, us)            = allSets ci
     mkAlt b@(Known k i)       = alt noLoc (mkPat k) (g b)
     mkAlt b@(Unknown u (V v)) = alt noLoc (mkPat u) (g b)
@@ -221,7 +268,7 @@ hSetFields :: ConfigInfo a
 hSetFields ci p (PConc _) ups
   = StateUpM [ (f, e) | (f, ExpM e) <- ups ] []
 hSetFields ci p q@(PAbs (V v) _) ups
-  = StateUpM [ (f, putMap (vExp f) (unExp $ hReadState ci p v) e) | (f, ExpM e) <- ups] []
+  = StateUpM [ (f, putMap (vExp f) (unExp $ hReadState ci p p v) e) | (f, ExpM e) <- ups] []
 hSetFields ci _ q ups
   = StateUpM [ (f, putMap (vExp f) (vExp $ pidIdx q) e) | (f, ExpM e) <- ups ] []
 
@@ -266,23 +313,23 @@ hExpr _ _ _ (ESet (S s))
 hExpr b ci p (ESet (SV v))
   = hExpr b ci p (EVar v)
 hExpr _ ci p (EPid q@(PAbs (V v) _))
-  = ExpM $ App (con pidCons) (App (vExp $ pidConstructor q) (unExp $ readState ci p v))
+  = ExpM $ App (con pidCons) (App (vExp $ pidConstructor q) (unExp $ readState ci p p v))
 hExpr _ _ _ (EPid q)
   = ExpM $ App (con pidCons) (pidExp q)
 
 hExpr _ _ _ (EVar (GV v))
   = ExpM . vExp $ v
 hExpr _ ci p (EVar (VPtrR t))
-  = readPtrR ci p t
+  = readPtrR ci p p t
 hExpr _ ci p (EVar (VPtrW t))
   = readPtrW ci p p t
 hExpr b ci p (EVar (V v))
   = if b && isIntVar ci v then
-      ExpM $ Paren (App (con intCons) (unExp $ hReadState ci p v))
+      ExpM $ Paren (App (con intCons) (unExp $ hReadState ci p p v))
     else
-      hReadState ci p v
-hExpr _ ci _ (EVar (VRef q v))
-  = hReadState ci q v
+      hReadState ci p p v
+hExpr _ ci p (EVar (VRef q v))
+  = hReadState ci p q v
 hExpr b ci p (ELeft e)
   = ExpM $ App (con leftCons) (unExp $ hExpr b ci p e)
 hExpr b ci p (ERight e)
@@ -323,25 +370,25 @@ hPred ci p (ILBop o e1 e2)
     qop Gt = opGt
     qop Ge = opGte
 
-hReadPtrR ci p t
-  = hReadState ci p (ptrR ci p t)
+hReadPtrR ci p q t
+  = hReadState ci p q (ptrR ci q t)
 
 hIncrPtrR ci p t
   = hSetFields ci p p [(ptrR ci p t, hIncr ptrRExp)]
   where
-    ptrRExp = hReadPtrR ci p t
+    ptrRExp = hReadPtrR ci p p t
 
 hIncrPtrW ci p q t
   = hSetFields ci p q [(ptrW ci q t, hIncr ptrWExp)]
   where
     ptrWExp = hReadPtrW ci p q t
 
-hReadPtrW ci p q@(PAbs (V v) _) t
-  = ExpM $ getMap (vExp (ptrW ci q t)) i
-  where
-    i = unExp $ hReadState ci p v
-hReadPtrW ci _ q t
-  = hReadState ci q (ptrW ci q t)
+-- hReadPtrW ci p q@(PAbs (V v) _) t
+--   = ExpM $ getMap (vExp (ptrW ci q t)) i
+--   where
+--     i = unExp $ hReadState ci p v
+hReadPtrW ci p q t
+  = hReadState ci p q (ptrW ci q t)
 
 hPutMessage ci p q (e,t)
   = StateUpM [] [((q, t), e')]
@@ -351,12 +398,12 @@ hPutMessage ci p q (e,t)
 hGetMessage ci p@PConc{} (V v, t)
   = hSetFields ci p p [(v, ExpM $ getVec (vExp (buf ci p t)) e')]
   where
-    ExpM e' = hReadPtrR ci p t
+    ExpM e' = hReadPtrR ci p p t
 
 hGetMessage ci p@(PAbs (GV i) _) (V v, t)
   = hSetFields ci p p [(v, ExpM $ getVec2D (vExp (buf ci p t)) (vExp i) e')]
   where
-    ExpM e' = hReadPtrR ci p t
+    ExpM e' = hReadPtrR ci p p t
 
 hMatchVal :: ConfigInfo a
           -> Pid
@@ -389,7 +436,7 @@ hNonDetRange :: ConfigInfo a
              -> Set
              -> HaskellModel
 hNonDetRange ci p (S s)
-  = ExpM $ metaFunction nondetRange [intE 0, unExp $ readState ci p s]
+  = ExpM $ metaFunction nondetRange [intE 0, unExp $ readState ci p p s]
 hNonDetRange _ _ _
   = error "hNonDetRange (TBD)"
 
@@ -404,6 +451,63 @@ hRule _ p g assert us
 
 hJoinUpdates _ _ (StateUpM us bufs) (StateUpM us' bufs')
   = StateUpM (us ++ us') (bufs ++ bufs')
+
+hBlockedCounter :: ConfigInfo a
+                -> Pid
+                -> Pid
+                -> HaskellModel
+hBlockedCounter ci p q
+  = ExpM (vExp $ numBlocked ci q)
+
+hSetBlockedCounter :: ConfigInfo a
+                   -> Pid
+                   -> Pid
+                   -> HaskellModel
+                   -> HaskellModel
+hSetBlockedCounter ci p q e
+  = StateUpM [(numBlocked ci q, unExp e)] []
+  
+hReadEnabled :: ConfigInfo a
+             -> Pid
+             -> HaskellModel
+hReadEnabled ci p
+  = ExpM (vExp $ enabledSet ci p)
+
+hSetEnabled :: ConfigInfo a
+            -> Pid
+            -> HaskellModel
+            -> HaskellModel
+hSetEnabled ci p e
+  = StateUpM [(enabledSet ci p, unExp e)] []
+
+hEnable :: ConfigInfo a
+        -> Pid
+        -> Pid
+        -> HaskellModel
+hEnable ci p q
+  = ExpM $ setInsert i (vExp (enabledSet ci q))
+    where
+      i = enabledIdx ci p q
+
+hDisable :: ConfigInfo a
+         -> Pid
+         -> Pid
+         -> HaskellModel
+hDisable ci p q
+  = ExpM $ setDelete i (vExp (enabledSet ci q))
+    where
+      i = enabledIdx ci p q
+
+enabledIdx :: ConfigInfo a
+           -> Pid
+           -> Pid
+           -> Exp
+enabledIdx ci p (PAbs (V v) _)
+  = unExp $ hReadState ci p p v
+enabledIdx ci p (PAbs (GV v) _)
+  = vExp v
+enabledIdx ci p q
+  = error (printf "hEnable(%s)" (show q))
 
 instance ILModel HaskellModel where 
   int        = hInt
@@ -433,11 +537,17 @@ instance ILModel HaskellModel where
   nonDet = hNonDet
   nonDetRange = hNonDetRange
   isUnfold = hIsUnfold
+  readEnabled = hReadEnabled
+  enable = hEnable
+  disable = hDisable
+  emptySet = hEmptySet
+  union    = hUnion
 
   joinUpdate = hJoinUpdates
   setPC      = hSetPC
   setState   = hSetFields
   setPCCounter = hSetPCCounter
+  setEnabled = hSetEnabled
   incrPtrR   = hIncrPtrR
   incrPtrW   = hIncrPtrW
   putMessage = hPutMessage
@@ -447,7 +557,6 @@ instance ILModel HaskellModel where
   matchVal   = hMatchVal
   printModel = printHaskell
   printCheck = printQCFile
-
 
 ilExpPat :: ILExpr -> H.Pat
 ilExpPat (EPid q)
@@ -465,75 +574,120 @@ varPat :: Var -> H.Pat
 varPat (V v)  = pvar $ name v
 varPat (GV v) = pvar $ name v
 
-printRules ci rs dl = prettyPrint $ FunBind matches
+type TxList = [(Pid, String, Maybe Exp, [(String, Exp)])]
+data RuleState = RS { txCtr :: Int
+                    , txList :: TxList
+                    }
+
+declRules :: ConfigInfo a -> [Rule HaskellModel] -> Exp -> Exp -> S.State RuleState Decl
+declRules ci rs cond done = FunBind <$> matches
   where
-    matches = (mkMatch <$> perPid) ++ [ mkDlMatch ]
+    matches     = do ms <- ruleMatches
+                     return (ms ++ [mkDlMatch])
+    ruleMatches = mapM mkMatch perPid
     mkMatch rules
-      = Match noLoc (name runState) (pat [rulesPid rules]) Nothing (mkGuardedRhss rules) Nothing 
+      = do m <- Match noLoc (name runState) (pat True [rulesPid rules]) Nothing <$> mkGuardedRhss rules <*> return Nothing 
+           S.modify $ \s -> s { txCtr = 0 }
+           return m
     mkGuardedRhss rules
-      = GuardedRhss [ mkRhs p grd a up | Rule p (ExpM grd) a up <- rules ]
+      = do rhss <- mapM (\(Rule p (ExpM grd) a up) -> mkRhs p grd a up) rules
+           return $ GuardedRhss rhss
     mkRhs p grd a (GuardedUpM f cases)
-      = GuardedRhs noLoc [Qualifier grd] (H.Case f (mkAlt p a <$> cases))
+      = do alts <- mapM (mkAlt p a) cases
+           return $ GuardedRhs noLoc [Qualifier grd] (H.Case f alts)
     mkRhs p grd a (StateUpM fups bufups)
-      = GuardedRhs noLoc [Qualifier grd] (mkCall ci p a fups bufups)
+      = do call <- mkCall ci p a fups bufups
+           return $ GuardedRhs noLoc [Qualifier grd] call
     -- mkRhs p ms grd fups bufups
     --   = GuardedRhs noLoc [Qualifier grd] (mkCall p fups bufups)
     mkAlt p a (ile, StateUpM fups bufups)
-      = Alt noLoc (ilExpPat ile) (UnGuardedRhs (mkCall ci p a fups bufups)) Nothing
+      = do call <- mkCall ci p a fups bufups
+           return $ Alt noLoc (ilExpPat ile) (UnGuardedRhs call) Nothing
     rulesPid rules = let Rule p _ _ _ = head rules in p
     pidRule (Rule p _ _ _) = p
     eqPid  = (==) `on` pidRule
     perPid = groupBy eqPid $ sortBy (compare `on` pidRule) rs
 
-    pat ps = [ PAsPat (name state) (PRec (UnQual (name stateRecordCons)) [PFieldWildcard]) ] ++
-             [ pvar (name (buf ci q t)) | q <- pids ci, t <- fst <$> tyMap ci ] ++
-             (if null ps then [peList] else [ mkSchedPat ps ]) ++
-             (ifQC ci (pvar (name "qc_ss")))
+    pat b ps = [ PAsPat (name state) (PRec (UnQual (name stateRecordCons)) [PFieldWildcard]) ] ++
+               [ pvar (name (buf ci q t)) | q <- pids ci, t <- fst <$> tyMap ci ] ++
+               [ mkSchedPat b ps ] ++
+               (ifQC ci (pvar (name "qc_ss")))
 
-    mkSchedPat ps = foldr (\q rest -> PInfixApp (pidPattern q) list_cons_name rest) schedPVar ps
+    mkSchedPat b ps = if b then
+                        foldr (\q rest -> PInfixApp (pidPattern q) list_cons_name rest) schedPVar ps
+                      else
+                        PList [pidPattern p | p <- ps]
     schedPVar  = pvar (name sched)
 
-    mkDlMatch  = Match noLoc (name runState) dlpat Nothing dlRhs Nothing
-    dlRhs      = UnGuardedRhs (mkAssert (Just (ExpM dl)) (if isQC ci
-                                                          then (var $ name "qc_ss")
-                                                          else unit_con))
-    dlpat      = pat []
+    mkDlMatch  = Match noLoc (name runState) dlpat Nothing (GuardedRhss [dlRhs]) Nothing
+    dlRhs      = GuardedRhs noLoc [Qualifier cond] (mkAssert (Just (ExpM done)) (if isQC ci
+                                                                                 then (var $ name "qc_ss")
+                                                                                 else unit_con))
+    dlpat      = pat False . concat $ [[univAbs p, extAbs p] | p <- pids ci, isAbs p ]
 
-mkCall ci p e fups bufups
-  = Let (BDecls [PatBind noLoc (pvar nextState) nextStateExp Nothing]) $
-        if isQC ci && isJust e then
-          eitherCall
-        else
-          metaFunction runState args
+readMsgUpdates :: [(String, Exp)] -> ([(String, Exp)], [(String, Exp)])
+readMsgUpdates ups
+  = partition isReadUpdate ups
   where
+    isReadUpdate (_, e) = not . null $ listify isVecRead e
+    isVecRead (Var (UnQual (Ident i))) = i == vec2DGetFn || i == vecGetFn
+    isVecRead _                        = False
+
+mkCall :: ConfigInfo a
+       -> Pid
+       -> Maybe HaskellModel
+       -> [(String, Exp)]
+       -> [((Pid, IL.Type), Exp)]
+       -> S.State RuleState Exp 
+mkCall ci p e fups bufups
+  | isQC ci && isJust e
+    = do n <- addTransitionM p e fups
+         return . letDecl n $ eitherCall
+  | isQC ci
+    = do n <- addTransitionM p e fups
+         return . letDecl n $ metaFunction runState (args "qc_s'")
+  | otherwise
+    = do n <- addTransitionM p e fups
+         return $ metaFunction runState (args n)
+  where
+    letDecl n = Let (BDecls [PatBind noLoc (pvar nextState) (nextStateRhs n) Nothing]) 
+    args n = [if isQC ci then vExp n else nextStateExp n] ++
+             mkBufUps bufups ++
+             [vExp sched] ++
+             ifQC ci (Paren $ infix_syn ":"
+                      (tuple [var nextState, pidExp p])
+                      (var $ name "qc_ss"))
+              
+    (bufReads,_) = readMsgUpdates fups
+             
     nextState = name "qc_s'"
-    nextStateExp = UnGuardedRhs . mkAssert e $ mkRecUp p fups
-                   
+    nextStateRhs n = UnGuardedRhs (nextStateExp n)
+    nextStateExp n
+      = metaFunction n ([vExp state] ++
+                        [ vExp (pidIdx p) | isAbs p ] ++
+                        [ paren readExp | (_, readExp) <- bufReads ])
     eitherCall =
       metaFunction "either"
         [ lamE noLoc [PWildCard] (App (Con . UnQual $ name "Left") (vExp "qc_ss"))
-        , lamE noLoc [pvar nextState] (metaFunction runState args)
+        , lamE noLoc [pvar nextState] (metaFunction runState (args state))
         , var nextState
         ]
-
-
-    args = [var nextState] ++
-           mkBufUps bufups ++
-           [vExp sched] ++
-           ifQC ci (Paren $ infix_syn ":"
-                     (tuple [var nextState, pidExp p])
-                     (var $ name "qc_ss"))
-                   
-    mkRecUp p fups
-      = RecUpdate (vExp state) [mkFieldUp p f e | (f,e) <- fups]
     mkBufUps bufups
       = [ findUp p t bufups | p <- pids ci, t <- fst <$> tyMap ci]
-    mkFieldUp _ f e
-      = FieldUpdate (UnQual (name f)) e
     findUp q t bufups
       = maybe (vExp $ buf ci q t) (\(q, e) -> updateBuf ci p q t e) $ findUpdate q t bufups
 
-
+addTransitionM :: Pid -> Maybe HaskellModel -> [(String, Exp)] -> S.State RuleState String
+addTransitionM p e fups
+  = do n <- S.gets txCtr
+       let tx = printf "t_%s_%d" (pid p) n
+       S.modify $ \s -> RS { txCtr = n + 1
+                           , txList = (p, tx, e', fups) : txList s
+                           }
+       return tx
+  where
+    e' = (\(ExpM e') -> e') <$> e
+        
 mkAssert (Just (ExpM e)) k
   = infixApp (metaFunction "liquidAssert" [e]) (op . sym $ "$") k
 mkAssert Nothing k
@@ -545,11 +699,11 @@ updateBuf ci p q@(PAbs (V idx) _) t e
     where
       v = vExp $ buf ci q t
       i = if isAbs p then
-            unExp (hReadState ci p idx)
+            unExp (hReadState ci p p idx)
           else
             vExp $ pidIdx q
       j = if isAbs p then
-            getMap (vExp $ ptrW ci q t) (unExp (hReadState ci p idx))
+            getMap (vExp $ ptrW ci q t) (unExp (hReadState ci p p idx))
           else
             getMap (vExp $ ptrW ci q t) (vExp $ pidIdx q)
 updateBuf ci p q@(PAbs _ _) t e
@@ -563,7 +717,6 @@ updateBuf ci p q t e
   where
     v = vExp $ buf ci q t
     i = vExp $ ptrW ci q t
-          
 
 findUpdate :: Pid -> IL.Type -> [((Pid, IL.Type), Exp)] -> Maybe (Pid, Exp)
 findUpdate (PAbs _ s) t bufups
@@ -624,6 +777,63 @@ initialCall ci =
       bufs = [ emptyVec p | p <- pids ci, _ <- tyMap ci ]
       emptyVec p = vExp $ if isAbs p then "emptyVec2D" else "emptyVec"
       initSchedCall = metaFunction initSched [vExp initState]
+
+transitionRules :: ConfigInfo a -> RuleState -> String
+transitionRules ci RS { txList = m }
+  = unlines (transitionRule ci <$> reverse m)
+
+transitionRule :: ConfigInfo a -> (Pid, String, Maybe Exp, [(String, Exp)]) -> String
+transitionRule ci (p, t, assert, updates)
+  = if isAbs p then
+      unlines [ printf "{-@ assume %s :: s0:{v:State | %s} -> %s:Int -> %s{s1:State | %s} @-}" t pre (pidIdx p) xtraSpec fieldUpdates
+              , printf "%s :: State -> Int -> %sState" t xtraTy
+              , prettyPrint tx 
+              ]
+    else
+      unlines [ printf "{-@ assume %s :: s0:{v:State | %s} -> %s{s1:State | %s} @-}" t pre xtraSpec fieldUpdates 
+              , printf "%s :: State -> %sState" t xtraTy
+              , prettyPrint tx 
+              ]
+  where
+    pre          = maybe "true" (\e -> printLine (logicify ci (vExp "v") e)) assert
+    vars         = withStateFields ci defaultVisitor
+    fieldUpdates = intercalate " && " [ mkUpdate f | f <- vars ]
+
+    (bufReads,nonReads) = readMsgUpdates updates
+    msgTy               = if isAbs p then "Map_t Int (Val Pid)" else "Val Pid"
+    (xtraSpec, xtraTy, xtraArg)
+      = case bufReads of
+          [(f, _)] -> (printf "%s_e:(%s) -> " f msgTy, printf "%s -> " msgTy, readExp f)
+          _        -> ("", "", "")
+                   -- mkAssert e $ mkRecUp p fups
+
+    mkUpdate :: String -> String
+    mkUpdate f   = case lookup f updates of
+                     Just e
+                       | f `elem` (fst <$> nonReads) -> printf "%s s1 = %s" f (printLine (logicify ci (vExp "s0") e))
+                       | otherwise                   -> printf "%s s1 = %s" f (readExp f)
+                     Nothing -> printf "%s s1 = %s s0" f f
+
+    printLine = prettyPrintWithMode defaultMode { layout = PPNoLayout }                                                   
+
+    tx   = FunBind [body]
+    body = runStateMatch t args (UnGuardedRhs (mkAssert (ExpM <$> assert) recUp))
+    args = [PAsPat (name state) (PRec (UnQual (name stateRecordCons)) [PFieldWildcard])] ++
+           [pvar $ name (pidIdx p) | isAbs p ] ++
+           [pvar $ name xtraArg    | not (null bufReads) ]
+    recUp
+      = RecUpdate (vExp state) ([mkFieldUp p f e | (f,e) <- nonReads] ++
+                                [mkReadUp p f e  | (f,e) <- bufReads])
+    mkFieldUp _ f e
+      = FieldUpdate (UnQual (name f)) e
+    mkReadUp _ f _
+      = FieldUpdate (UnQual (name f)) (vExp $ readExp f)
+
+    readExp f = f ++ "_e"
+
+runStateMatch f args rhs
+  = Match noLoc (name f) args Nothing rhs Nothing
+    -- logicalExp = 
           
 printHaskell :: (Data a, Identable a)
              => ConfigInfo a -> [Rule HaskellModel] -> String
@@ -635,7 +845,9 @@ printHaskell ci rs = unlines [ header
     header = unlines $ [ "{-# Language RecordWildCards #-}"
                        , "{-# Language OverloadedStrings #-}"
                        , "{-# Language ScopedTypeVariables #-}"
+                       , "{-@ LIQUID \"--no-true-types\" @-}"
                        , "module SymVerify where"
+                       , "import Data.Set"
                        , "import SymVector"
                        , "import SymMap"
                        , "import SymBoilerPlate"
@@ -650,12 +862,14 @@ printHaskell ci rs = unlines [ header
                       ,"import Test.QuickCheck.Monadic"]
                  else ["import Language.Haskell.Liquid.Prelude"])
 
-    ExpM dl   = deadlockFree ci
+    (ExpM cond, ExpM done) = deadlockFree ci
+    (rules,ruleSt) = S.runState (declRules ci rs cond done) RS { txCtr = 0, txList = [] }
     body = unlines [ unlines (prettyPrint <$> initialState ci)
                    , unlines (prettyPrint <$> initialSched ci)
                    , prettyPrint (initialCall ci)
-                   , printRules ci rs dl
+                   , prettyPrint rules
                    , prettyPrint (totalCall ci)
+                   , transitionRules ci ruleSt
                    , ""
                    , initSpecOfConfig ci
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
@@ -816,10 +1030,16 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
                             bind v (metaFunction "return" [intE (toInteger i)]) 
                           _                ->
                             bind v e
-        absArb _ b u pc = [ bindBound b arbPos
-                          , bind u (arbRange (intE 0) (vExp b))
-                          , bind pc (singletonMap (intE 0) (vExp b))
-                          ]
+        absArb p b pc blk = [ bindBound b arbPos
+                            , bind pc (singletonMap (intE 0) (vExp b))
+                            , if initBlocked p then
+                                bind blk (metaFunction "return" [vExp b])
+                              else
+                                bind blk arbZero
+                            ]
+        initBlocked p  = case snd (pidProc ci p) of
+                           Recv{} -> True
+                           _      -> False
         
         arbPC p v      = arbInt p v
         arbPtr p rd wr = arbInt p rd ++ arbInt p wr
