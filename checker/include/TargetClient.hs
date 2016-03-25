@@ -27,6 +27,8 @@ import Control.Parallel.Strategies
 import Control.DeepSeq
 import qualified Text.PrettyPrint.Leijen as P
 
+import Debug.Trace
+
 data AIntOp = AIntEq -- =
             | AIntLt -- <
             | AIntLe -- <=
@@ -228,7 +230,11 @@ isAbs n = snd $ find' n thisPids
 
 getAbs n    = head $ filter ((== n) . snd) thisAbs
 getClassN n = let (c,_,_) = fst (getAbs n) in c
-getClassK n = let (_,k,_) = fst (getAbs n) in k
+getClassK n = let (_,k,_) = fst (getAbs n)
+                  SInt2 fieldName field = k
+              in SInt { sVarName = printf "%s[0]" fieldName
+                      , sVarAcc  =  \s -> SymMap.get (field s) 0
+                      }
 
 uncurry3 f (x,y,z) = f x y z
 fst3 (a,_,_)       = a
@@ -238,7 +244,7 @@ fst3 (a,_,_)       = a
 -- ######################################################################
 
 evalAInt (AConst i) _       = i
-evalAInt (AIntSingle v) s   = (sVarAcc v) s
+evalAInt (AIntSingle v) s   = (sVarAcc v) s -- trace (show v) ((sVarAcc v) s)
 evalAInt (AIntClass v i) s  = get ((sVarAcc2 v) s) (evalAInt i s)
 
 evalOp       :: AIntOp -> (Int -> Int -> Bool)
@@ -316,6 +322,9 @@ instance P.Pretty Pred where
 instance P.Pretty Grammar where
   pretty (Imp l r) = P.fill 20 (_pretty l) P.<+> P.text "→"
                                            P.<+> _pretty r
+
+instance Show StateVar where
+  show = sVarName
 
 -- ######################################################################
 -- Test

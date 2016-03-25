@@ -130,7 +130,7 @@ runQC verb fp cwd
 copyOtherQCIncludes d =
   forM_ fns $ \fn -> do f <- getDataFileName ("checker" </> "include" </> fn)
                         copyFile f (d </> fn)
-  where fns = ["SymQCTH.hs", "TargetClient.hs"]
+  where fns = ["SymQCTH.hs", "TargetClient.hs", "Makefile"]
 
 runVerifier opt outd
  | optVerify opt && optQC opt =

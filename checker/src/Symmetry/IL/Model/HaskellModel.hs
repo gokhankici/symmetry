@@ -34,6 +34,11 @@ data HaskellModel = ExpM { unExp :: Exp }
                   | GuardedUpM Exp [(ILExpr, HaskellModel)]
                     deriving Show
 
+differenceFN = "S.difference"
+emptyFN      = "S.empty"
+singletonFN  = "S.singleton"
+unionFN      = "S.union"
+
 ---------------------
 -- Convenience Functions                    
 ---------------------
@@ -59,11 +64,11 @@ neg = vExp "not"
 
 setInsert :: Exp -> Exp -> Exp
 setInsert i s
-  = metaFunction "union" [metaFunction "singleton" [i], s]
+  = metaFunction unionFN [metaFunction singletonFN [i], s]
 
 setDelete :: Exp -> Exp -> Exp
 setDelete i s
-  = metaFunction "difference" [s, metaFunction "singleton" [i]]
+  = metaFunction differenceFN [s, metaFunction singletonFN [i]]
 ---------------------
 -- Logicify
 ---------------------
@@ -78,10 +83,10 @@ logicify ci s e
       | i `elem` fields   = metaFunction i [s]
       | i == mapGetFn     = vExp $ "Map_select"
       | i == mapPutFn     = vExp $ "Map_store"
-      | i == "union"      = vExp $ "Set_cup"
-      | i == "difference" = vExp $ "Set_dif"
-      | i == "singleton"  = vExp $ "Set_sng"
-      | otherwise       = e'
+      | i == unionFN      = vExp $ "Set_cup"
+      | i == differenceFN = vExp $ "Set_dif"
+      | i == singletonFN  = vExp $ "Set_sng"
+      | otherwise         = e'
     go e' = e'
     p e'@(Paren _) = e'
     p e'           = Paren e'
@@ -154,11 +159,11 @@ hInt x
     mkInt = intE . toInteger 
 
 hEmptySet :: HaskellModel
-hEmptySet = ExpM (vExp "empty")
+hEmptySet = ExpM (vExp emptyFN)
 
 hUnion :: HaskellModel -> HaskellModel -> HaskellModel
 hUnion (ExpM e1) (ExpM e2)
-  = ExpM $ metaFunction "union" [e1, e2]
+  = ExpM $ metaFunction unionFN [e1, e2]
 hUnion e1 e2
   = error (printf "hUnion %s %s" (show e1) (show e2))
 
@@ -768,6 +773,19 @@ totalCall ci =
                  ifQC ci (vExp "states"))
       schedPat = pParen (PInfixApp (pvar (name "s")) list_cons_name (pvar (name "sched")))
 
+totalCall2 :: ConfigInfo a -> Decl
+totalCall2 ci =
+  FunBind [Match noLoc (name runState) args Nothing rhs Nothing]
+    where
+      args    = [wildcard] ++ -- state
+                ((const wildcard) <$> bufArgs) ++ -- buffers
+                [PList []] ++ -- schedule
+                ifQC ci (pvar $ name "states") -- states
+      rhs     = if isQC ci
+                then UnGuardedRhs $ app (var $ name "Right") (vExp "states")
+                else UnGuardedRhs $ tuple []
+      bufArgs = [ "a" ++ show i | i <- [0..] | _ <- pids ci, _ <- tyMap ci]
+
 initialCall :: ConfigInfo a -> Decl
 initialCall ci =
   nameBind noLoc (name "check") call
@@ -847,7 +865,7 @@ printHaskell ci rs = unlines [ header
                        , "{-# Language ScopedTypeVariables #-}"
                        , "{-@ LIQUID \"--no-true-types\" @-}"
                        , "module SymVerify where"
-                       , "import Data.Set"
+                       , "import qualified Data.Set as S"
                        , "import SymVector"
                        , "import SymMap"
                        , "import SymBoilerPlate"
@@ -869,6 +887,7 @@ printHaskell ci rs = unlines [ header
                    , prettyPrint (initialCall ci)
                    , prettyPrint rules
                    , prettyPrint (totalCall ci)
+                   , prettyPrint (totalCall2 ci)
                    , transitionRules ci ruleSt
                    , ""
                    , initSpecOfConfig ci
@@ -892,7 +911,6 @@ printQCFile ci _
              , "{-# Language OverloadedStrings #-}"
              , "module Main where"
              , "import SymVector"
-             , "import SymVector"
              , "import SymMap"
              , "import SymVerify"
              , "import SymBoilerPlate"
@@ -907,7 +925,9 @@ printQCFile ci _
              , "import System.Directory"
              , "import System.Exit"
              ]
-    spec =    qcDefsStr (qcSamples ci)
+    spec =
+              -- qcDefsStr (qcSamples ci) 500
+              qcDefsStr 10 20
             : qcMainStr
             : (prettyPrint  $  runTestDecl ci) : ""
             : arbValStr : ""
@@ -948,7 +968,7 @@ runTestDecl ci =
   FunBind [ Match noLoc (name "runTest") args Nothing (UnGuardedRhs rhs) Nothing ]
   where pvarn n    = pvar $ name n
         varn n     = Var . UnQual $ name n
-        args       = [PTuple Boxed [pvarn "s"]]
+        args       = []
         emptyVec p = vExp $ if isAbs p then "emptyVec2D" else "emptyVec"
         -- turn buffers into empty vectors
         bufs       = [ emptyVec p | p <- pids ci, _ <- tyMap ci ]
@@ -956,12 +976,14 @@ runTestDecl ci =
         rs_app     = appFun (varn runState)
                             ((varn "s") : bufs ++ [varn "sched", emptyListCon])
         -- let l = runState ... in ...
-        rhs = Do [ Generator noLoc (pvarn "sched") schedGen
+        rhs = Do [ Generator noLoc (pvarn "s") stateGen
+                 , Generator noLoc (pvarn "sched") schedGen
                  , Qualifier (metaFunction "return" [retExp])
                  ]
+        stateGen = metaFunction "generate" [vExp "arbitrary"]
         schedGen = metaFunction "generate"
                    [ metaFunction "vectorOf"
-                     [ intE 500, metaFunction "oneof" [listE [ mkPid p | p <- pids ci ]] ]
+                     [ vExp "sched_length", metaFunction "oneof" [listE [ mkPid p | p <- pids ci ]] ]
                    ]
         mkPid p = if isAbs p then 
                     fmap_syn (pidCons p)
@@ -1033,9 +1055,9 @@ arbitraryStateDecl ci =  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl
         absArb p b pc blk = [ bindBound b arbPos
                             , bind pc (singletonMap (intE 0) (vExp b))
                             , if initBlocked p then
-                                bind blk (metaFunction "return" [vExp b])
+                                bind blk (metaFunction "return" [metaFunction singletonFN [vExp b]])
                               else
-                                bind blk arbZero
+                                bind blk (metaFunction "return" [var $ name emptyFN])
                             ]
         initBlocked p  = case snd (pidProc ci p) of
                            Recv{} -> True
@@ -1255,26 +1277,34 @@ pidToJSONDecl ci =
         mkTy     = name . ("p" ++) . show
 
 -- ### "Static" functions to be included ##################################################
-qcDefsStr n = unlines [ "fn = \"states.json\""
-                      , "sample_size = " ++ show n
-                      , "type Run = [(State, Pid)]"
-                      , "type QCResult = (State, Either Run Run)"
-                      ]
+qcDefsStr sample_size sched_length =
+  unlines [ "fn = \"states.json\""
+          , "sample_size = " ++ show sample_size
+          , "sched_length = " ++ show sched_length
+          , "type Run = [(State, Pid)]"
+          , "type QCResult = (State, Either Run Run)"
+          ]
 
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
 \\n\
-\          inputs  <- generate $ vector sample_size :: IO [State] \n\
-\          results <- mapM runTest inputs \n\
-\          C.writeFile fn (fromString \"var states =\\n\")\n\
-\          C.appendFile fn (encodePretty $ toJSON results) \n\
-\          when (any (isLeft . snd) results) exitFailure\n\
-\          exitSuccess\n\
+\          C.writeFile fn (fromString \"var states =\\n\") \n\
+\          C.appendFile fn (fromString \"[\\n\") \n\
 \\n\
-\      --  bs <- C.readFile fn \n\
-\      --  let Just l = decode bs :: Maybe [QCResult] \n\
-\      --  Prelude.putStrLn (\"Successfull runs: \" ++ (show $ length l)) \n"
+\          replicateM_ (sample_size-1) (printResult >> comma) \n\
+\          printResult \n\
+\          C.appendFile fn (fromString \"]\\n\") \n\
+\\n\
+\          exitSuccess \n\
+\\n\
+\          where printResult = do result <- runTest \n\
+\                                 when (isLeft $ snd result) exitFailure \n\
+\                                 C.appendFile fn (encode $ toJSON result) \n\
+\                                 newLine \n\
+\                newLine = C.appendFile fn (fromString \"\\n\") \n\
+\                comma   = C.appendFile fn (fromString \",\") \n\
+\"
 
 
 arbValStr = "instance (Arbitrary a) => Arbitrary (Val a) where \n\
@@ -1292,12 +1322,14 @@ arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \                  return $ mkVec a\n"
 
 stVarDecl="\
-\data StateVar = SInt  {sVarName :: String, sVarAcc  :: State -> Int} \n\
-\              | SInt2 {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n"
+\data StateVar = SInt  {sVarName :: String, sVarAcc  :: State -> Int}\n\
+\              | SInt2 {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n\
+\              | SSet  {sVarName :: String, sVarAccS :: State -> S.Set Int}\n"
 
 mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
 mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
+mkS  s  = appFun (var $ name "SSet") [Lit $ String s, var $ name s]
 
 pno' ci p   = fpnHelper ts
               where ts                = filter (\(p',_) -> p == p') pidNums
@@ -1327,7 +1359,10 @@ showAbss ci = FunBind [mpids, mabs, mpcs, mptrs, {-mvals,-} mints, mglob, mglobi
         pno = pno' ci
 
         -- bound: Int, unfold: Int, pc: Map Int Int
-        absF     p b unf pcv = [("abs", tuple [ tuple [mkI1 b, mkI1 unf, mkI2 pcv]
+        absF     p b unf pcv = [("abs", tuple [ tuple [ mkI1 b
+                                                      , mkI2 unf
+                                                      , mkS  pcv
+                                                      ]
                                               , intE (pno p)])]
         -- pid name, is class?
         pcF      p pcN       = [("pc", tuple [mkI (isAbs p) pcN, intE $ pno p])]

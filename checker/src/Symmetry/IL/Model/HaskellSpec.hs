@@ -224,7 +224,7 @@ mapType :: Type -> Type -> Type
 mapType k v = TyApp (TyApp mapTyCon k) v
 
 intSetType :: Type
-intSetType = TyApp (TyCon (UnQual (name "Set"))) intType
+intSetType = TyApp (TyCon (UnQual (name "S.Set"))) intType
 
 stateRecord :: [([Name], Type)] -> QualConDecl
 stateRecord fs
@@ -323,7 +323,7 @@ stateDecl ci
     mkInt = liftMap intType
     liftMap t p v = [([name v], if isAbs p then mapType intType t else t)]
 
-fixupQualType (TyApp (TyCon (UnQual (Ident "Set"))) _)
+fixupQualType (TyApp (TyCon (UnQual (Ident "S.Set"))) _)
   = TyApp (TyCon (UnQual (name "Set_Set"))) (TyVar (name "a"))
 fixupQualType t
   = t
