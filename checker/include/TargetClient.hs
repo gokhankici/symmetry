@@ -25,6 +25,7 @@ import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Set as S
 import Control.Parallel.Strategies
 import Control.DeepSeq
+import qualified Text.PrettyPrint.Leijen as P
 
 data AIntOp = AIntEq -- =
             | AIntLt -- <
@@ -81,7 +82,9 @@ filterGrammars gs states =
      -- printf "invariants:  %s\n" (show invariants)
      -- printf "passed_imps: %s\n" (show passed_imps)
      printf "size gs = %d\n" (length passed_imps)
-     forM_ passed_imps (putStrLn . show)
+     forM_ passed_imps (\i -> do P.putDoc $ P.pretty i
+                                 printf "\n\n")
+
 
 
 readStates :: IO [State]
@@ -262,37 +265,6 @@ instance Checkable Grammar where
 -- Some instances
 -- ######################################################################
 
-instance Show AIntOp where
-  show AIntEq = "="
-  show AIntLt = "<"
-  show AIntLe = "≤"
-  show AIntGt = ">"
-  show AIntGe = "≥"
-
-instance Show AInt where
-  show (AIntSingle v)  = sVarName v
-  show (AIntClass v i) = printf "%s[%s]" (sVarName v) (show i)
-  show (AConst i)      = show i
-
-instance Show Atom where
-  show (IntCmp l o r) = unwords [show l, show o, show r]
-
-instance Show Pred where
-  show (AndP as) = if null as then "True"
-                              else intercalate " ∧ " (show <$> as)
-  show (NegP p)  = printf "¬ (%s)" (show p)
-
-instance Show Grammar where
-  show (Imp l r) = printf "%s → %s" (show l) (show r)
-
-instance Show CandGroup where
-  show cand = let a  = groupAntecedent cand
-                  cs = groupConsequents cand
-              in  printf "%s → %s (%s)" (show a) (show cs)
-                                        (if touchedGroup cand
-                                            then "touched" :: String
-                                            else "untouched")
-
 instance NFData State where
   rnf s = s `seq` ()
 
@@ -313,6 +285,37 @@ instance Eq StateVar where
 instance Ord StateVar where
   compare s1 s2 = compare (sVarName s1) (sVarName s2)
 
+
+-- ######################################################################
+-- Pretty
+-- ######################################################################
+
+_pretty = P.align . P.pretty
+
+instance P.Pretty AIntOp where
+  pretty AIntEq = P.text "="
+  pretty AIntLt = P.text "<"
+  pretty AIntLe = P.text "≤"
+  pretty AIntGt = P.text ">"
+  pretty AIntGe = P.text "≥"
+
+instance P.Pretty AInt where
+  pretty (AIntSingle v)  = P.text (sVarName v)
+  pretty (AIntClass v i) = (P.text $ sVarName v) P.<> (P.brackets $ P.pretty i)
+  pretty (AConst i)      = P.int i
+
+instance P.Pretty Atom where
+  pretty (IntCmp l o r) = P.hsep [P.pretty l, P.pretty o, P.pretty r]
+
+instance P.Pretty Pred where
+  pretty (AndP as) = if null as then P.text "True"
+                                else P.align $ P.sep
+                                             $ P.punctuate (P.text " ∧") (P.pretty <$> as)
+  pretty (NegP p)  = (P.text "¬") P.<+> P.parens (P.pretty p)
+
+instance P.Pretty Grammar where
+  pretty (Imp l r) = P.fill 20 (_pretty l) P.<+> P.text "→"
+                                           P.<+> _pretty r
 
 -- ######################################################################
 -- Test
