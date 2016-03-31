@@ -863,6 +863,9 @@ printHaskell ci rs = unlines [ header
     header = unlines $ [ "{-# Language RecordWildCards #-}"
                        , "{-# Language OverloadedStrings #-}"
                        , "{-# Language ScopedTypeVariables #-}"
+                       , "{-# LANGUAGE TypeSynonymInstances #-}"
+                       , "{-# LANGUAGE FlexibleInstances #-} "
+                       , "{-# LANGUAGE DeriveGeneric #-}"
                        , "{-@ LIQUID \"--no-true-types\" @-}"
                        , "module SymVerify where"
                        , "import qualified Data.Set as S"
@@ -874,6 +877,7 @@ printHaskell ci rs = unlines [ header
                        , "import Control.Monad"
                        , "import Data.HashMap.Strict as H hiding (map,filter,null)"
                        , "import Data.Map.Strict as M"
+                       , "import GHC.Generics"
                        ] ++
              (if isQC ci
                  then ["import Test.QuickCheck"
@@ -894,7 +898,7 @@ printHaskell ci rs = unlines [ header
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
-                     ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls ci)
+                     ++ "\n" ++ jsonDecls
                      ++ "\n" ++ stVarDecl
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
@@ -947,25 +951,8 @@ arbitraryDecls :: (Identable a, Data a) => ConfigInfo a -> [Decl]
 arbitraryDecls ci = [ arbitraryPidPreDecl ci
                     , arbitraryStateDecl  ci ]
 
-jsonDecls   :: ConfigInfo a -> [Decl]
-jsonDecls ci = ($ ci) <$> [ stateFromJSONDecl
-                          , stateToJSONDecl
-                          , pidFromJSONDecl
-                          , pidToJSONDecl     ]
-
 -- ### QuickCheck helpers ##################################################
 
--- runTest (s,plist)
---   = let l = runState s emptyVec emptyVec plist []
---     in (reverse l, plist)
-
--- prop_runState :: State -> [Pid_pre] -> Property
--- prop_runState s plist = monadicIO $ do
---   let l = runState s emptyVec emptyVec plist []
---   in if null l
---         then return ()
---         else run (log_states l)
---   assert True
 runTestDecl    :: ConfigInfo a -> Decl
 runTestDecl ci =
   FunBind [ Match noLoc (name "runTest") args Nothing (UnGuardedRhs rhs) Nothing ]
@@ -1102,182 +1089,6 @@ arbitraryPidPreDecl ci =
         ts       = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
         mkTy     = name . ("p" ++) . show
 
--- ### Aeson (FromJSON, ToJSON) instances ##################################################
-
--- instance FromJSON State where
---   parseJSON (Object s) = State <$>
---                          s .: "pidR0Pc" <*>
---                          ...
---                          s .: "x_3"
---   parseJSON _            = mzero
-stateFromJSONDecl    :: ConfigInfo a -> Decl
-stateFromJSONDecl ci =
-  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl (FunBind [fr, fr_err])]
-  where
-        fr = Match noLoc (name "parseJSON") fr_arg Nothing (UnGuardedRhs rhs) Nothing
-        -- do { var1 <- ..., ..., return State{...} }
-        rhs = Do (bs ++ [Qualifier ret])
-        ret = metaFunction "return" [RecConstr (qname stateRecordCons) [FieldWildcard]]
-        -- accessor for each variable
-        varParser n = Generator noLoc (pvarn n)
-                      (infix_syn ".:" (var $ name "s") (Lit $ String n))
-        -- the names of the arguments in the state
-        bs = withStateFields ci SFV { combine = concat
-                                    , absF = absFs
-                                    , pcF = pcFs
-                                    , ptrF = ptrFs
-                                    , valF = field
-                                    , intF = field
-                                    , globF = glob
-                                    , globIntF = glob
-                                    }
-        absFs _ x y z = [varParser x, varParser y, varParser z]
-        pcFs _ f      = [varParser f]
-        ptrFs _ f1 f2 = [varParser f1, varParser f2]
-        field _ f     = [varParser f]
-        glob f        = [varParser f | f `notElem` absPidSets]
-        absPidSets    = [ setName s | PAbs _ s <- fst <$> cProcs (config ci) ]
-
-
-        -- parseJSON _ = mzero
-        fr_err  = Match noLoc (name "parseJSON") [PWildCard] Nothing rhs_err Nothing
-        rhs_err = UnGuardedRhs . vExp $ "mzero"
-
-        tc_name = UnQual $ name "FromJSON"
-        tv_name = TyVar $ name stateRecordCons
-        qname n = UnQual $ name n
-        pvarn n = H.PVar $ name n
-        fr_arg = [PApp (qname "Object") [pvarn "s"]]
-
-
--- instance ToJSON State where
---   toJSON State{..} = object [ "pidR0Pc"    .= pidR0Pc
---                             , ...
---                             , "x_3"        .= x_3        ]
-stateToJSONDecl    :: ConfigInfo a -> Decl
-stateToJSONDecl ci =
-  InstDecl noLoc Nothing [] [] tc_name [tv_name] [InsDecl (FunBind [to])]
-  where
-        to = Match noLoc (name "toJSON") to_arg Nothing (UnGuardedRhs rhs) Nothing
-
-        -- = object ["<var 1>" .= <var 1>, ..., "<var n>" .= <var n>]
-        rhs = app (var $ name "object") (listE exps)
-
-        -- ["<var 1>" .= <var 1>, ..., "<var n>" .= <var n>]
-        -- exps = map (\(n,_) -> infix_syn ".=" (Lit $ String n) (var $ name n))
-        --            (stateVarsNTList ci)
-        enc v = infix_syn ".=" (Lit $ String v) (var $ name v)
-        exps =  withStateFields ci SFV { combine = concat
-                                       , absF = absFs
-                                       , pcF = pcFs
-                                       , ptrF = ptrFs
-                                       , valF = field
-                                       , intF = field
-                                       , globF = glob
-                                       , globIntF = glob
-                                       }
-        absFs _ x y z = [enc x, enc y, enc z]
-        pcFs _ f      = [enc f]
-        ptrFs _ f1 f2 = [enc f1, enc f2]
-        field _ f     = [enc f]
-        glob f        = [enc f | f `notElem` absPidSets]
-        absPidSets    = [ setName s | PAbs _ s <- fst <$> cProcs (config ci) ]
-
-        -- parseJSON _ = mzero
-        tc_name = UnQual $ name "ToJSON"
-        tv_name = TyVar $ name stateRecordCons
-        qname n = UnQual $ name n
-        -- State{..}
-        to_arg = [PRec (qname "State") [PFieldWildcard]]
-
--- instance (FromJSON p1) => FromJSON (Pid_pre p1) where
---   parseJSON (Object o) = case toList o of
---     [(k,v)] | k == "PIDR0" -> return PIDR0
---             | k == "PIDR2" -> PIDR2 <$> parseJSON v
---   parseJSON _ = mzero
-pidFromJSONDecl    :: ConfigInfo a -> Decl
-pidFromJSONDecl ci =
-  InstDecl noLoc Nothing [] ctx tc_name [tv_name] [InsDecl (FunBind [fr, fr_err])]
-  where
-        fr     = Match noLoc (name "parseJSON") fr_arg Nothing (UnGuardedRhs rhs) Nothing
-        fr_arg = [PApp (qname "Object") [pvarn "o"]]
-
-        -- case H.toList o of ...
-        rhs = H.Case (app (qvar (ModuleName "H") (name "toList")) (var' "o")) alts
-
-        -- [(key,value)]
-        alts     = [Alt noLoc case_pat case_rhs Nothing]
-
-        -- [(k,v)] | ...
-        case_pat = PList [PTuple Boxed [pvar' "k", pvar' "v"]]
-        -- ... | k = PIDR0 -> return PIDR0 ...
-        case_rhs = GuardedRhss guards
-
-        guards   = [ GuardedRhs noLoc [g_stmt p] (g_exp p) | p <- pids ci ]
-        g_stmt p = Qualifier $ infix_syn "==" (var' "k")
-                                              (Lit $ String (pidConstructor p))
-        g_exp p = let pidCon = Con . UnQual $ name (pidConstructor p)
-                  in if isAbs p
-                     then fmap_syn pidCon (app (var' "parseJSON") (var' "v"))
-                     else app (var' "return") pidCon
-
-        -- parseJSON _ = mzero
-        fr_err  = Match noLoc (name "parseJSON") [PWildCard] Nothing rhs_err Nothing
-        rhs_err = UnGuardedRhs . var . name $ "mzero"
-
-        -- possible context class
-        ctx     = [ClassA tc_name [TyVar v] | v <- pid_vars]
-        tc_name = UnQual $ name "FromJSON"
-        -- Pid_pre p1 ...
-        tv_name = TyParen (foldl' TyApp (TyVar $ name pidPre) [TyVar v | v <- pid_vars])
-
-        var' s  = var $ name s
-        pvar' s = pvar $ name s
-        qname n = UnQual $ name n
-        pvarn n = H.PVar $ name n
-
-        pid_vars = [ t | (p, t) <- ts, isAbs p  ]
-        ts       = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
-        mkTy     = name . ("p" ++) . show
-
--- instance (ToJSON p1) => ToJSON (Pid_pre p1) where
---   toJSON PIDR0       = object [ "PIDR0" .= Null ]
---   toJSON (PIDR2 pid) = object [ "PIDR2" .= toJSON pid ]
-pidToJSONDecl    :: ConfigInfo a -> Decl
-pidToJSONDecl ci =
-  InstDecl noLoc Nothing [] ctx tc_name [tv_name] [InsDecl (FunBind tos)]
-  where
-        tos = [Match noLoc
-                     (name "toJSON")
-                     [to_arg p]
-                     Nothing
-                     (UnGuardedRhs (to_rhs p))
-                     Nothing | p <- pids ci]
-
-        to_arg p = if isAbs p
-                   then PParen $ PApp (qname (pidConstructor p)) [pvarn "pid"]
-                   else PApp (qname (pidConstructor p)) []
-
-        to_rhs p = app (var' "object")
-                       (listE [infix_syn ".="
-                                         (Lit $ String (pidConstructor p))
-                                         (if isAbs p
-                                             then app (var' "toJSON") (var' "pid")
-                                             else Con $ qname "Null")])
-
-        -- possible context class
-        ctx     = [ClassA tc_name [TyVar v] | v <- pid_vars]
-        tc_name = UnQual $ name "ToJSON"
-        -- Pid_pre p1 ...
-        tv_name = TyParen (foldl' TyApp (TyVar $ name pidPre) [TyVar v | v <- pid_vars])
-
-        var' s  = var $ name s
-        qname n = UnQual $ name n
-        pvarn n = H.PVar $ name n
-
-        pid_vars = [ t | (p, t) <- ts, isAbs p  ]
-        ts       = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
-        mkTy     = name . ("p" ++) . show
 
 -- ### "Static" functions to be included ##################################################
 qcDefsStr sample_size sched_length =
@@ -1331,6 +1142,12 @@ stVarDecl="\
 \data StateVar = SInt  {sVarName :: String, sVarAcc  :: State -> Int}\n\
 \              | SInt2 {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n\
 \              | SSet  {sVarName :: String, sVarAccS :: State -> S.Set Int}\n"
+
+jsonDecls="\
+\instance FromJSON State \n\
+\instance ToJSON State \n\
+\instance FromJSON Pid \n\
+\instance ToJSON Pid \n"
 
 mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]

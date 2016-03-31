@@ -285,7 +285,7 @@ stateDecl :: ConfigInfo a
 stateDecl ci
   = ([dataDecl], specStrings)
   where
-    ds           = derivin ci ["Show", "Eq"]
+    ds           = derivin ci ["Show", "Eq", "Generic"]
     dataDecl     = DataDecl noLoc DataType [] (name stateRecordCons) [] [stateRecord fs] ds
     specStrings  = unlines [ dataReft
                            , ""
@@ -358,7 +358,7 @@ pidDecl ci
     tvbinds     = [ UnkindedVar t | (p, t) <- ts, isAbs p  ]
     ts          = [ (p, mkTy t) | p <- pids ci | t <- [0..] ]
     mkTy        = name . ("p" ++) . show
-    ds          = derivin ci ["Show", "Eq", "Ord"]
+    ds          = derivin ci ["Show", "Eq", "Ord", "Generic"]
 
 pidFn :: IL.Pid -> Decl
 pidFn p

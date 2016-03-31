@@ -21,9 +21,9 @@ pred: TargetClient states.json
 clean:
 	rm -f *.o *.hi *.dyn_hi *.dyn_o $(EXES) *.aux *.hp *.pdf *.prof *.ps
 
-$(PROFILE_EXES): profile-%: %
+profile: TargetClient
 	stack exec -- ./$< +RTS -p -hc
 
 print-profile: TargetClient.hp
 	hp2pretty $<
-	open TargetClient.svg
+	xdg-open TargetClient.svg 2>&1 1>/dev/null &

@@ -98,15 +98,13 @@ filterGrammars :: Int
                -> [Grammar]
                -> [Grammar]
 filterGrammars n bs gs =
-  finalize $! fst $! filterGrammarsHelper n (groupCandidates gs,bs)
-  -- let cands = groupCandidates gs
-  -- in  finalize $! fst $! filterGrammarsHelper n (cands,bs)
+  finalize $ fst $ filterGrammarsHelper n (groupCandidates gs,bs)
 
 filterGrammarsHelper :: Int
                      -> ([CandGroup], C.ByteString)
                      -> ([CandGroup], C.ByteString)
 filterGrammarsHelper 0 t = t
-filterGrammarsHelper n t = filterGrammarsHelper (n-1) $! partialFilter t
+filterGrammarsHelper n t = (filterGrammarsHelper $! (n-1)) $! (partialFilter t)
 
 
 partialFilter           :: ([CandGroup], C.ByteString)
@@ -117,7 +115,7 @@ partialFilter (cands,bs) = let (states, rest) = readState bs
 
 groupCandidates   :: [Grammar] -> [CandGroup]
 groupCandidates gs =
-  let sameAnt          = groupBy ((==) `on` antecedent) $!
+  let sameAnt          = groupBy ((==) `on` antecedent) $
                            sortBy (compare `on` antecedent) gs
       combine cs@(c:_) = CandGroup (antecedent c)
                                    ((S.toList . S.fromList) (map consequent cs))
@@ -128,12 +126,12 @@ groupCandidates gs =
 
 fit              :: [CandGroup] -> [State] -> [CandGroup]
 fit cands states  = let newCands = foldl' pruneCandidates cands states
-                    in  filter touchedGroup $! newCands
+                    in  filter touchedGroup $ newCands
 
 
 pruneCandidates :: [CandGroup] -> State -> [CandGroup]
 pruneCandidates cands s =
-  filter (not . isTrivial) $! map (pruneConseqs s) cands
+  filter (not . isTrivial) $ map (pruneConseqs s) cands
 
 
 pruneConseqs :: State -> CandGroup -> CandGroup
@@ -161,18 +159,18 @@ readState bs  =
   let
       bs'        = bsGetLine $ C.dropWhile (== ',') bs -- drop the first comma if it exists
       rest       = bsDropLine bs
-      --Just qcRes = decode' bs' :: Maybe QCResult
-      states     = extractStates $! fromJust $ (decode bs' :: Maybe QCResult)
 
-      extractStates (s,e) = (:) s $! case e of
-                                       Left r  -> map fst r
-                                       Right r -> map fst r
-  in (states, rest)
+      extractStates (s,e) = (:) s $ case e of
+                                      Left r  -> map fst r
+                                      Right r -> map fst r
+  in ( extractStates $ fromJust $ (decode bs' :: Maybe QCResult)
+     , rest
+     )
 
 
 -- ######################################################################
 -- Predicate Generation
--- ######################################################################
+
 
 grammar_gen :: Gen Grammar
 grammar_gen  = Imp <$> lhs_gen <*> rhs_gen
@@ -278,7 +276,7 @@ bsDropLine   :: C.ByteString -> C.ByteString
 bsDropLine bs = C.drop 1 $ C.dropWhile (/= '\n') bs
 
 applyN      :: Int -> (a -> a) -> a -> a
-applyN n f a = foldl' (\a' _ -> f $! a') a [1..n]
+applyN n f a = foldl' (\a' _ -> f $ a') a [1..n]
 
 -- ######################################################################
 -- Predicate Evaluator

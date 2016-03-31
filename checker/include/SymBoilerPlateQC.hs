@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 module SymBoilerPlate where
 
 import SymMap
@@ -8,6 +9,7 @@ import Data.HashMap.Strict as H
 
 import System.IO.Unsafe
 import System.Random
+import GHC.Generics
 
 {-@ nonDet :: a -> x:Int -> {v:Int | 0 <= v && v < x } @-}
 nonDet :: a -> Int -> Int
@@ -46,36 +48,10 @@ data Val p = VUnit {}
              | VInR { vInR :: Val p }
              | VInL { vInL :: Val p }
              | VPair { vLeft :: Val p, vRight :: Val p }
-               deriving (Show, Eq)
+               deriving (Show, Eq, Generic)
 
-instance (FromJSON p) => FromJSON (Val p) where
-  parseJSON (Object o) = case H.toList o of
-    [(key,val)]
-      | key == "VUnit"   -> return VUnit
-      | key == "VUnInit" -> return VUnInit
-      | key == "VInt"    -> VInt    <$> parseJSON val
-      | key == "VString" -> VString <$> parseJSON val
-      | key == "VSet"    -> VSet    <$> parseJSON val
-      | key == "VPid"    -> VPid    <$> parseJSON val
-      | key == "VInR"    -> VInR    <$> parseJSON val
-      | key == "VInL"    -> VInL    <$> parseJSON val
-      | key == "VPair"   -> do (l,r) <- parseJSON val
-                               return (VPair l r)
-      | otherwise        -> mzero
-    _ -> mzero
-
-  parseJSON _ = mzero
-
-instance (ToJSON p) => ToJSON (Val p) where
-  toJSON VUnit       = object [ "VUnit"   .= Null         ]
-  toJSON VUnInit     = object [ "VUnInit" .= Null         ]
-  toJSON (VInt i)    = object [ "VInt"    .= toJSON i     ]
-  toJSON (VString s) = object [ "VString" .= toJSON s     ]
-  toJSON (VSet s)    = object [ "VSet"    .= toJSON s     ]
-  toJSON (VPid p)    = object [ "VPid"    .= toJSON p     ]
-  toJSON (VInR v)    = object [ "VInR"    .= toJSON v     ]
-  toJSON (VInL v)    = object [ "VInL"    .= toJSON v     ]
-  toJSON (VPair l r) = object [ "VPair"   .= toJSON (l,r) ]
+instance (FromJSON p) => FromJSON (Val p)
+instance (ToJSON p) => ToJSON (Val p)
 
 liquidAssert p x = if p
                      then Right x
