@@ -909,6 +909,7 @@ printQCFile ci _
     lhFile = sep (map unlines [header, spec])
     header = [ "{-# Language RecordWildCards #-}"
              , "{-# Language OverloadedStrings #-}"
+             , "{-# Language ScopedTypeVariables #-}"
              , "module Main where"
              , "import SymVector"
              , "import SymMap"
@@ -922,12 +923,14 @@ printQCFile ci _
              , "import Data.Maybe"
              , "import Data.Either"
              , "import Data.String"
+             , "import qualified Data.HashMap.Strict as HM"
+             , "import Data.Scientific"
              , "import System.Directory"
              , "import System.Exit"
              ]
     spec =
-              -- qcDefsStr (qcSamples ci) 500
-              qcDefsStr 10 20
+              qcDefsStr (qcSamples ci) 500
+              -- qcDefsStr 10 20
             : qcMainStr
             : (prettyPrint  $  runTestDecl ci) : ""
             : arbValStr : ""
@@ -1283,13 +1286,16 @@ qcDefsStr sample_size sched_length =
           , "sched_length = " ++ show sched_length
           , "type Run = [(State, Pid)]"
           , "type QCResult = (State, Either Run Run)"
+          , printf "size_obj :: Object = HM.fromList [(\"stateCount\", Number $ scientific %d 0)]" (sample_size)
           ]
 
 qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
 \\n\
-\          C.writeFile fn (fromString \"var states =\\n\") \n\
+\          C.writeFile fn (encode size_obj) \n\
+\          C.appendFile fn (fromString \"\\n\") \n\
+\          C.appendFile fn (fromString \"var states =\\n\") \n\
 \          C.appendFile fn (fromString \"[\\n\") \n\
 \\n\
 \          replicateM_ (sample_size-1) (printResult >> comma) \n\

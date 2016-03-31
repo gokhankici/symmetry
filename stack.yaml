@@ -10,6 +10,8 @@ extra-deps:
 - intern-0.9.1.4
 - located-base-0.1.0.0
 - plugins-1.5.5.0
+- floatshow-0.2.4
+- aeson-0.11.1.4
 
 compiler-check: newer-minor
 

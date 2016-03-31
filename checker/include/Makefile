@@ -1,12 +1,13 @@
-CC      = stack ghc
-CC_ARGS = -- -O2
+CC      = stack exec -- ghc
+CC_ARGS = -prof -fprof-auto -O2
 
-EXES = QC TargetClient
+EXES         = QC TargetClient
+PROFILE_EXES = $(patsubst %,profile-%,$(EXES))
 
 all: $(EXES)
 
 $(EXES): %: %.hs
-	$(CC) $(CC_ARGS) $< -o $@
+	$(CC) --make $< $(CC_ARGS)
 
 states: states.json
 
@@ -18,4 +19,11 @@ pred: TargetClient states.json
 
 .PHONY: clean
 clean:
-	rm -f *.o *.hi *.dyn_hi *.dyn_o $(EXES)
+	rm -f *.o *.hi *.dyn_hi *.dyn_o $(EXES) *.aux *.hp *.pdf *.prof *.ps
+
+$(PROFILE_EXES): profile-%: %
+	stack exec -- ./$< +RTS -p -hc
+
+print-profile: TargetClient.hp
+	hp2pretty $<
+	open TargetClient.svg

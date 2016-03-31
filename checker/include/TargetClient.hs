@@ -19,10 +19,12 @@ import Data.Aeson
 import Data.Function
 import Data.Ix
 import Data.List
+import Data.Maybe
 import Control.Monad
 import Data.Map.Strict (findWithDefault)
 import qualified Data.ByteString.Lazy.Char8 as C
 import qualified Data.Set as S
+import qualified Data.HashMap.Strict as HM
 import Control.Parallel.Strategies
 import Control.DeepSeq
 import qualified Text.PrettyPrint.Leijen as P
@@ -36,8 +38,8 @@ data AIntOp = AIntEq -- =
             | AIntGe -- >=
             deriving (Eq,Ord)
 
-data AInt = AIntSingle StateVar      -- for a single process
-          | AIntClass  StateVar AInt -- for a process class (map & index)
+data AInt = AIntSingle { svar :: StateVar}
+          | AIntClass  { svar :: StateVar, classSize :: StateVar }
           | AConst Int               -- 0,1,...
           deriving (Eq,Ord)
 
@@ -62,7 +64,7 @@ type Run      = [(State, Pid)]
 type QCResult = (State, Either Run Run)
 
 fn        = "states.json"
-predCount = 10000
+predCount = 50000
 
 
 -- ######################################################################
@@ -71,40 +73,51 @@ predCount = 10000
 
 
 main :: IO ()
-main  = do states <- readStates
-           gs     <- generate (vectorOf predCount grammar_gen)
-           filterGrammars gs states
+main  = do bs <- C.readFile fn
+           gs <- generate (vectorOf predCount grammar_gen)
+           let (n,bs') = extractStateCount bs
+               preds   = filterGrammars n bs' gs
 
-
-filterGrammars gs states =
-  do let candidates  = groupCandidates gs
-         invariants  = fit candidates states
-         passed_imps = finalize invariants
-     -- printf "candidates:  %s\n" (show candidates)
-     -- printf "invariants:  %s\n" (show invariants)
-     -- printf "passed_imps: %s\n" (show passed_imps)
-     printf "size gs = %d\n" (length passed_imps)
-     forM_ passed_imps (\i -> do P.putDoc $ P.pretty i
+           printf "size of predicates %d\n" (length preds)
+           forM_ preds (\i -> do P.putDoc $ P.pretty i
                                  printf "\n\n")
 
 
+extractStateCount :: C.ByteString -> (Int, C.ByteString)
+extractStateCount bs =
+  let Just size_obj = decode (bsGetLine bs) :: Maybe (HM.HashMap String Int)
+      rest          = applyN 3 bsDropLine bs
+      def           = error "State count not found"
+      -- n             = HM.lookupDefault def "stateCount" size_obj
+      n             = 100
+  in (n, rest)
 
-readStates :: IO [State]
-readStates  =
-  do bs <- C.readFile fn
-     let bs'      = C.drop 1 $ C.dropWhile (/= '\n') bs
-         Just qcs = decode bs' :: Maybe [QCResult]
-         states   = concatMap extractStates qcs
-     return states
 
-  where extractStates (s,e) = s : case e of
-                                    Left r  -> map fst r
-                                    Right r -> map fst r
+filterGrammars :: Int
+               -> C.ByteString
+               -> [Grammar]
+               -> [Grammar]
+filterGrammars n bs gs =
+  finalize $! fst $! filterGrammarsHelper n (groupCandidates gs,bs)
+  -- let cands = groupCandidates gs
+  -- in  finalize $! fst $! filterGrammarsHelper n (cands,bs)
+
+filterGrammarsHelper :: Int
+                     -> ([CandGroup], C.ByteString)
+                     -> ([CandGroup], C.ByteString)
+filterGrammarsHelper 0 t = t
+filterGrammarsHelper n t = filterGrammarsHelper (n-1) $! partialFilter t
+
+
+partialFilter           :: ([CandGroup], C.ByteString)
+                        -> ([CandGroup], C.ByteString)
+partialFilter (cands,bs) = let (states, rest) = readState bs
+                           in  (fit cands states, rest)
 
 
 groupCandidates   :: [Grammar] -> [CandGroup]
 groupCandidates gs =
-  let sameAnt          = groupBy ((==) `on` antecedent) $
+  let sameAnt          = groupBy ((==) `on` antecedent) $!
                            sortBy (compare `on` antecedent) gs
       combine cs@(c:_) = CandGroup (antecedent c)
                                    ((S.toList . S.fromList) (map consequent cs))
@@ -114,13 +127,13 @@ groupCandidates gs =
 
 
 fit              :: [CandGroup] -> [State] -> [CandGroup]
-fit cands states  = let newCands = foldr pruneCandidates cands states
-                    in  filter touchedGroup newCands
+fit cands states  = let newCands = foldl' pruneCandidates cands states
+                    in  filter touchedGroup $! newCands
 
 
-pruneCandidates :: State -> [CandGroup] -> [CandGroup]
-pruneCandidates s cands =
-  filter (not . isTrivial) $ map (pruneConseqs s) cands
+pruneCandidates :: [CandGroup] -> State -> [CandGroup]
+pruneCandidates cands s =
+  filter (not . isTrivial) $! map (pruneConseqs s) cands
 
 
 pruneConseqs :: State -> CandGroup -> CandGroup
@@ -140,6 +153,22 @@ finalize cands = map toGrammar cands
 
 
 isTrivial cand = null (groupConsequents cand)
+
+
+-- Read an element from a list
+readState :: C.ByteString -> ([State], C.ByteString)
+readState bs  =
+  let
+      bs'        = bsGetLine $ C.dropWhile (== ',') bs -- drop the first comma if it exists
+      rest       = bsDropLine bs
+      --Just qcRes = decode' bs' :: Maybe QCResult
+      states     = extractStates $! fromJust $ (decode bs' :: Maybe QCResult)
+
+      extractStates (s,e) = (:) s $! case e of
+                                       Left r  -> map fst r
+                                       Right r -> map fst r
+  in (states, rest)
+
 
 -- ######################################################################
 -- Predicate Generation
@@ -167,7 +196,7 @@ lhs_gen =  do len   <- frequency (zip freqs sizes)
                                         allPcs = (range ((-1),maxPc)) :: [Int]
                                     in elements (AConst <$> allPcs)
                     mkpc (v,n) = if isAbs n
-                                    then let k = AIntSingle $ getClassK n
+                                    then let k = getClassN n
                                          in AIntClass v k
                                     else AIntSingle v
 
@@ -181,7 +210,7 @@ rw_ptr_gen :: Gen [Atom]
 rw_ptr_gen  = sequence $ map fptr thisPtrs
               where fptr ((r,w),n) = let ops = [AIntGe, AIntLt]
                                      in if isAbs n
-                                        then let k = AIntSingle $ getClassK n
+                                        then let k = getClassN n
                                              in IntCmp (AIntClass r k)
                                                   <$> elements ops
                                                   <*> return (AIntClass w k)
@@ -190,15 +219,20 @@ rw_ptr_gen  = sequence $ map fptr thisPtrs
                                                <*> return (AIntSingle w)
 
 atom_gen :: Gen Atom
-atom_gen  = do operand1 <- aint_gen
-               operand2 <- aint_gen
-               if operand1 == operand2
-                  then atom_gen
-                  else do op <- op_gen
-                          return $ IntCmp operand1 op operand2
+atom_gen  = do op1 <- aint_gen
+               op2 <- suchThat aint_gen (cond op1)
+               op  <- op_gen
+               return $ IntCmp op1 op op2
+               where cond  op1 op2 = and [c op2 | c <- map ($ op1) conds]
+                     conds         = [cond1, cond2]
+                     cond1 op1 op2 = op1 /= op2
+                     cond2 op1 op2 = case (op1,op2) of
+                                       (AConst _, AConst _) -> False
+                                       _                    -> True
+
 
 aint_gen :: Gen AInt
-aint_gen  = oneof [abs_gen, ptr_gen, ints_gen]
+aint_gen  = oneof [abs_gen, ptr_gen, ints_gen, const_gen]
 
 abs_gen :: Gen AInt
 abs_gen  = elements $ map (AIntSingle . fst3 . fst) thisAbs
@@ -214,9 +248,12 @@ ints_gen  = elements (map sVarToInt thisInts)
 op_gen :: Gen AIntOp
 op_gen  = elements [AIntEq, AIntLt, AIntLe, AIntGt, AIntGe]
 
+const_gen :: Gen AInt
+const_gen =  AConst <$> elements [(-1), 0, 1]
+
 sVarToInt      :: (StateVar,Int) -> AInt
 sVarToInt (v,n) = if isAbs n
-                  then AIntClass  v (AIntSingle $ getClassK n)
+                  then AIntClass  v (getClassN n)
                   else AIntSingle v
 
 -- ######################################################################
@@ -230,22 +267,26 @@ isAbs n = snd $ find' n thisPids
 
 getAbs n    = head $ filter ((== n) . snd) thisAbs
 getClassN n = let (c,_,_) = fst (getAbs n) in c
-getClassK n = let (_,k,_) = fst (getAbs n)
-                  SInt2 fieldName field = k
-              in SInt { sVarName = printf "%s[0]" fieldName
-                      , sVarAcc  =  \s -> SymMap.get (field s) 0
-                      }
 
 uncurry3 f (x,y,z) = f x y z
 fst3 (a,_,_)       = a
+
+bsGetLine :: C.ByteString -> C.ByteString
+bsGetLine  = C.takeWhile (/= '\n')
+
+bsDropLine   :: C.ByteString -> C.ByteString
+bsDropLine bs = C.drop 1 $ C.dropWhile (/= '\n') bs
+
+applyN      :: Int -> (a -> a) -> a -> a
+applyN n f a = foldl' (\a' _ -> f $! a') a [1..n]
 
 -- ######################################################################
 -- Predicate Evaluator
 -- ######################################################################
 
-evalAInt (AConst i) _       = i
-evalAInt (AIntSingle v) s   = (sVarAcc v) s -- trace (show v) ((sVarAcc v) s)
-evalAInt (AIntClass v i) s  = get ((sVarAcc2 v) s) (evalAInt i s)
+evalAInt (AConst i) _       = [i]
+evalAInt (AIntSingle v) s   = [sVarAcc v s] -- trace (show v) (sVarAcc v s)
+evalAInt (AIntClass v n) s  = [get (sVarAcc2 v s) i | i <- [0..(sVarAcc n s)-1]]
 
 evalOp       :: AIntOp -> (Int -> Int -> Bool)
 evalOp AIntEq = (==)
@@ -258,7 +299,9 @@ class Checkable a where
   check :: a -> State -> Bool
 
 instance Checkable Atom where
-  check (IntCmp l o r) s = (evalOp o) (evalAInt l s) (evalAInt r s)
+  check (IntCmp l o r) s = all (uncurry (evalOp o)) [(a,b) | a <- ll, b <- rl]
+                           where ll = evalAInt l s
+                                 rl = evalAInt r s
 
 instance Checkable Pred where
   check (AndP as) s = and (map (\a -> check a s) as)
@@ -307,7 +350,7 @@ instance P.Pretty AIntOp where
 
 instance P.Pretty AInt where
   pretty (AIntSingle v)  = P.text (sVarName v)
-  pretty (AIntClass v i) = (P.text $ sVarName v) P.<> (P.brackets $ P.pretty i)
+  pretty (AIntClass v n) = (P.text $ sVarName v) P.<> (P.brackets $ P.text "i")
   pretty (AConst i)      = P.int i
 
 instance P.Pretty Atom where
@@ -331,20 +374,20 @@ instance Show StateVar where
 -- ######################################################################
 
 
-testGrammarFilter states =
-  let ((pc0,_):_)      = thisPcs
-      (_:(pc1,_):_)    = thisPcs
-      (((_,k2,_),_):_) = thisAbs
-      ((i0,_):_)       = thisInts
-      (_:(i1,_):_)     = thisInts
-      lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
-                 , IntCmp (AIntClass pc1 (AIntSingle k2)) AIntEq (AConst 0) ]
-      rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
-      rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
+-- testGrammarFilter states =
+--   let ((pc0,_):_)      = thisPcs
+--       (_:(pc1,_):_)    = thisPcs
+--       (((k2,_,_),_):_) = thisAbs
+--       ((i0,_):_)       = thisInts
+--       (_:(i1,_):_)     = thisInts
+--       lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
+--                  , IntCmp (AIntClass pc1 k2) AIntEq (AConst 0) ]
+--       rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
+--       rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
 
-      gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
-                rhs1 -- (xl0 ≤ xl1)
-      gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
-                rhs2 -- (xl0 > xl1)
-      gs  = [gs1, gs2]
-  in filterGrammars gs states
+--       gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+--                 rhs1 -- (xl0 ≤ xl1)
+--       gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
+--                 rhs2 -- (xl0 > xl1)
+--       gs  = [gs1, gs2]
+--   in filterGrammars gs states
