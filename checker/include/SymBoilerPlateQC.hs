@@ -48,7 +48,7 @@ data Val p = VUnit {}
              | VInR { vInR :: Val p }
              | VInL { vInL :: Val p }
              | VPair { vLeft :: Val p, vRight :: Val p }
-               deriving (Show, Eq, Generic)
+               deriving (Show, Eq, Ord, Generic)
 
 instance (FromJSON p) => FromJSON (Val p)
 instance (ToJSON p) => ToJSON (Val p)

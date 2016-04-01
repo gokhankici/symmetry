@@ -45,6 +45,9 @@ unionFN      = "S.union"
 vExp :: String -> Exp
 vExp = var . name
 
+sExp :: String -> Exp
+sExp  = var . sym
+
 opEq, opAnd, opOr, opPlus, opMinus, opLt, opLte, opGt, opGte :: QOp
 opEq   = op (sym "==")
 opAnd  = op (sym "&&")
@@ -992,15 +995,25 @@ runTestDecl ci =
 
 -- ### Arbitrary instances ##################################################
 
--- instance Arbitrary State where
---         arbitrary
---           = State <$> .. <*> ...
-
 arbFn :: String
 arbFn  = "arbitrary"
 
-arbPos :: Exp    
-arbPos = fmap_syn (vExp "getPositive") (vExp arbFn)
+arbIntMax :: Int
+arbIntMax  = 5
+
+arbPos :: Exp
+arbPos  = appFun (vExp "suchThat") [ vExp arbFn
+                                   , paren $ lamE noLoc
+                                                  [pvar $ name "k"]
+                                                  $ appFun (sExp "&&") [gt_0, lt_max]
+                                   ]
+          where gt_0   = appFun (sExp "<") [intE 0, k]
+                lt_max = appFun (sExp ">") [m, k]
+                k      = vExp "k"
+                m      = intE $ toInteger arbIntMax
+
+-- arbPos :: Exp
+-- arbPos  = fmap_syn (vExp "getPositive") arbIntExp
 
 arbZero :: Exp
 arbZero = metaFunction "return" [intE 0]
@@ -1104,7 +1117,8 @@ qcMainStr="main :: IO () \n\
 \main = do b <- doesFileExist fn \n\
 \          when b (removeFile fn) \n\
 \\n\
-\          C.writeFile fn (encode size_obj) \n\
+\          C.writeFile  fn (fromString \"var stateCount=\\n\") \n\
+\          C.appendFile fn (encode size_obj) \n\
 \          C.appendFile fn (fromString \"\\n\") \n\
 \          C.appendFile fn (fromString \"var states =\\n\") \n\
 \          C.appendFile fn (fromString \"[\\n\") \n\
@@ -1124,15 +1138,16 @@ qcMainStr="main :: IO () \n\
 \"
 
 
-arbValStr = "instance (Arbitrary a) => Arbitrary (Val a) where \n\
+arbValStr = printf "instance (Arbitrary a) => Arbitrary (Val a) where \n\
 \  arbitrary = oneof [ return VUnit \n\
 \                    , return VUnInit \n\
-\                    , VInt    <$> arbitrary \n\
+\                    , VInt    <$> %s \n\
 \                    , VString <$> arbitrary \n\
 \                    , VPid    <$> arbitrary \n\
 \                    , VInL    <$> arbitrary \n\
 \                    , VInR    <$> arbitrary \n\
 \                    , VPair   <$> arbitrary <*> arbitrary ]\n"
+                     (prettyPrint arbPos)
 
 arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \   arbitrary = do a <- arbitrary \n\

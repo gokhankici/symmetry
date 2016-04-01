@@ -1,29 +1,54 @@
-CC      = stack exec -- ghc
-CC_ARGS = -prof -fprof-auto -O2
+# To build with profiling support:
+# $> stack build --library-profiling --executable-profiling --ghc-options="-fprof-auto -rtsopts"
 
-EXES         = QC TargetClient
-PROFILE_EXES = $(patsubst %,profile-%,$(EXES))
+CC           = stack exec -- ghc
+CC_ARGS      = -O2 -rtsopts
+CC_ARGS_PROF = -prof -fprof-auto
+MAX_MEM      = 3G
+
+STATE_EXE  = QC
+TARGET_EXE = TargetClient
+EXES       = $(STATE_EXE) $(TARGET_EXE)
+
+PREDICATES_LOG = predicates.log
 
 all: $(EXES)
 
 $(EXES): %: %.hs
 	$(CC) --make $< $(CC_ARGS)
 
+# Generate sample states and infer invariants ###################################
+
 states: states.json
 
-states.json: QC
+states.json: $(STATE_EXE)
 	./$<
 
-pred: TargetClient states.json
-	./$<
+pred: $(TARGET_EXE)
+	./$< +RTS -M$(MAX_MEM) -RTS 2>&1 1>$(PREDICATES_LOG)
+	cat $(PREDICATES_LOG)
 
-.PHONY: clean
-clean:
-	rm -f *.o *.hi *.dyn_hi *.dyn_o $(EXES) *.aux *.hp *.pdf *.prof *.ps
+# Profile predicate generation code #############################################
 
-profile: TargetClient
-	stack exec -- ./$< +RTS -p -hc
+profile: $(TARGET_EXE).hp
 
-print-profile: TargetClient.hp
+$(TARGET_EXE).hp:
+	rm -f $(TARGET_EXE)
+	$(CC) --make $(TARGET_EXE) $(CC_ARGS) $(CC_ARGS_PROF)
+	./$(TARGET_EXE) +RTS -p -hc -M$(MAX_MEM) -RTS
+
+# Plot heap statistics ##########################################################
+
+print-profile: $(TARGET_EXE).svg
+
+$(TARGET_EXE).svg: $(TARGET_EXE).hp
 	hp2pretty $<
-	xdg-open TargetClient.svg 2>&1 1>/dev/null &
+	xdg-open $(TARGET_EXE).svg 2>&1 1>/dev/null &
+
+
+
+.PHONY: clean pred states profile print-profile
+
+clean:
+	rm -f $(EXES) *.o *.hi *.dyn_hi *.dyn_o \
+          *.aux *.hp *.pdf *.prof *.ps

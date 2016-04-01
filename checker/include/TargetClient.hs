@@ -55,9 +55,9 @@ data Grammar = Imp { antecedent :: Pred
                deriving (Eq)
 
 -- implications that have the same antecedent
-data CandGroup = CandGroup { groupAntecedent  :: Pred
-                           , groupConsequents :: [Pred]
-                           , touchedGroup     :: Bool
+data CandGroup = CandGroup { groupAntecedent  :: !Pred
+                           , groupConsequents :: ![Pred]
+                           , touchedGroup     :: !Bool
                            }
 
 type Run      = [(State, Pid)]
@@ -85,11 +85,11 @@ main  = do bs <- C.readFile fn
 
 extractStateCount :: C.ByteString -> (Int, C.ByteString)
 extractStateCount bs =
-  let Just size_obj = decode (bsGetLine bs) :: Maybe (HM.HashMap String Int)
-      rest          = applyN 3 bsDropLine bs
+  let bs1           = bsDropLine bs
+      Just size_obj = decode (bsGetLine bs1) :: Maybe (HM.HashMap String Int)
+      rest          = applyN 3 bsDropLine bs1
       def           = error "State count not found"
-      -- n             = HM.lookupDefault def "stateCount" size_obj
-      n             = 100
+      n             = HM.lookupDefault def "stateCount" size_obj
   in (n, rest)
 
 
@@ -110,7 +110,8 @@ filterGrammarsHelper n t = (filterGrammarsHelper $! (n-1)) $! (partialFilter t)
 partialFilter           :: ([CandGroup], C.ByteString)
                         -> ([CandGroup], C.ByteString)
 partialFilter (cands,bs) = let (states, rest) = readState bs
-                           in  (fit cands states, rest)
+                               lhs = fit cands states
+                           in  lhs `seq` rest `seq` (lhs,rest)
 
 
 groupCandidates   :: [Grammar] -> [CandGroup]
@@ -126,18 +127,23 @@ groupCandidates gs =
 
 fit              :: [CandGroup] -> [State] -> [CandGroup]
 fit cands states  = let newCands = foldl' pruneCandidates cands states
-                    in  filter touchedGroup $ newCands
+                        r = filter touchedGroup $! newCands
+                    in  seq r r
 
 
 pruneCandidates :: [CandGroup] -> State -> [CandGroup]
 pruneCandidates cands s =
-  filter (not . isTrivial) $ map (pruneConseqs s) cands
+  filter (not . isTrivial) $! map (\c -> let r = pruneConseqs s c
+                                         in  seq r r)
+                                  cands
 
 
 pruneConseqs :: State -> CandGroup -> CandGroup
 pruneConseqs s cand =
   if check (groupAntecedent cand) s
-    then cand { groupConsequents = filter (\p -> check p s) (groupConsequents cand)
+    then cand { groupConsequents = filter (\p -> let r = check p s
+                                                 in  seq r r)
+                                          (groupConsequents cand)
               , touchedGroup     = True }
     else cand
 
