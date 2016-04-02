@@ -13,21 +13,22 @@ module Main where
 import SymMap
 import SymVerify hiding (check)
 
-import Text.Printf
-import Test.QuickCheck
-import Data.Aeson
-import Data.Function
-import Data.Ix
-import Data.List
-import Data.Maybe
-import Control.Monad
-import Data.Map.Strict (findWithDefault)
+import           Control.DeepSeq
+import           Control.Monad
+import           Control.Parallel.Strategies
+import           Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as C
-import qualified Data.Set as S
+import           Data.Function
 import qualified Data.HashMap.Strict as HM
-import Control.Parallel.Strategies
-import Control.DeepSeq
+import           Data.Ix
+import           Data.List
+import           Data.Map.Strict (findWithDefault)
+import           Data.Maybe
+import qualified Data.Set as S
+import           Options
+import           Test.QuickCheck
 import qualified Text.PrettyPrint.Leijen as P
+import           Text.Printf
 
 import Debug.Trace
 
@@ -63,9 +64,14 @@ data CandGroup = CandGroup { groupAntecedent  :: !Pred
 type Run      = [(State, Pid)]
 type QCResult = (State, Either Run Run)
 
-fn        = "states.json"
-predCount = 50000
+data MainOptions = MainOptions { optStatesFile :: String
+                               , optPredCount  :: Int
+                               }
 
+instance Options MainOptions where
+  defineOptions
+    = MainOptions <$> simpleOption "states-file" "states.json" "JSON file that stores execution traces"
+                  <*> simpleOption "pred-count"  100000        "Number of predicates that randomly generated"
 
 -- ######################################################################
 -- Main loop, finding invariants
@@ -73,14 +79,15 @@ predCount = 50000
 
 
 main :: IO ()
-main  = do bs <- C.readFile fn
-           gs <- generate (vectorOf predCount grammar_gen)
-           let (n,bs') = extractStateCount bs
-               preds   = filterGrammars n bs' gs
+main  = runCommand $ \opts _ ->
+          do bs <- C.readFile (optStatesFile opts)
+             gs <- generate (vectorOf (optPredCount opts) grammar_gen)
+             let (n,bs') = extractStateCount bs
+                 preds   = filterGrammars n bs' gs
 
-           printf "size of predicates %d\n" (length preds)
-           forM_ preds (\i -> do P.putDoc $ P.pretty i
-                                 printf "\n\n")
+             printf "size of predicates %d\n" (length preds)
+             forM_ preds (\i -> do P.putDoc $ P.pretty i
+                                   printf "\n\n")
 
 
 extractStateCount :: C.ByteString -> (Int, C.ByteString)

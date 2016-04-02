@@ -10,7 +10,11 @@ STATE_EXE  = QC
 TARGET_EXE = TargetClient
 EXES       = $(STATE_EXE) $(TARGET_EXE)
 
+STATES         = states.json
+PREDCOUNT      = 100000
 PREDICATES_LOG = predicates.log
+
+REMOTE_FOLDER = goto:symmetry
 
 all: $(EXES)
 
@@ -19,14 +23,38 @@ $(EXES): %: %.hs
 
 # Generate sample states and infer invariants ###################################
 
-states: states.json
+states: $(STATES)
 
-states.json: $(STATE_EXE)
+$(STATES): $(STATE_EXE)
 	./$<
 
 pred: $(TARGET_EXE)
-	./$< +RTS -M$(MAX_MEM) -RTS 2>&1 1>$(PREDICATES_LOG)
+	./$< --pred-count $(PREDCOUNT) \
+	     +RTS -M$(MAX_MEM) -RTS \
+	     2>&1 1>$(PREDICATES_LOG)
 	cat $(PREDICATES_LOG)
+
+# Run the invariant generator on goto ###########################################
+
+define REMOTE_SCRIPT
+cd /home/rkici/symmetry &&     \
+./$< --pred-count $(PREDCOUNT) \
+     +RTS -M$(MAX_MEM) -RTS    \
+     2>&1 1>$(PREDICATES_LOG)
+endef
+
+run-on-goto: $(TARGET_EXE)
+	test -e $(STATES)
+	rsync -azP $(STATES)     $(REMOTE_FOLDER)/$(STATES)
+	rsync -azP $(TARGET_EXE) $(REMOTE_FOLDER)/$(TARGET_EXE)
+	ssh goto $(REMOTE_SCRIPT)
+	scp $(REMOTE_FOLDER)/$(PREDICATES_LOG) ./
+
+
+# -------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
+
 
 # Profile predicate generation code #############################################
 
@@ -45,6 +73,10 @@ $(TARGET_EXE).svg: $(TARGET_EXE).hp
 	hp2pretty $<
 	xdg-open $(TARGET_EXE).svg 2>&1 1>/dev/null &
 
+
+# -------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
 
 
 .PHONY: clean pred states profile print-profile
