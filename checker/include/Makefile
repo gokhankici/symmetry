@@ -14,7 +14,8 @@ STATES         = states.json
 PREDCOUNT      = 100000
 PREDICATES_LOG = predicates.log
 
-REMOTE_FOLDER = goto:symmetry
+REMOTE_FOLDER_NAME = /home/rkici/symmetry
+REMOTE_ADDR        = goto:$(REMOTE_FOLDER_NAME)
 
 all: $(EXES)
 
@@ -37,7 +38,7 @@ pred: $(TARGET_EXE)
 # Run the invariant generator on goto ###########################################
 
 define REMOTE_SCRIPT
-cd /home/rkici/symmetry &&     \
+cd $(REMOTE_FOLDER_NAME) &&    \
 ./$< --pred-count $(PREDCOUNT) \
      +RTS -M$(MAX_MEM) -RTS    \
      2>&1 1>$(PREDICATES_LOG)
@@ -45,10 +46,10 @@ endef
 
 run-on-goto: $(TARGET_EXE)
 	test -e $(STATES)
-	rsync -azP $(STATES)     $(REMOTE_FOLDER)/$(STATES)
-	rsync -azP $(TARGET_EXE) $(REMOTE_FOLDER)/$(TARGET_EXE)
-	ssh goto $(REMOTE_SCRIPT)
-	scp $(REMOTE_FOLDER)/$(PREDICATES_LOG) ./
+	rsync -azP $(STATES)     $(REMOTE_ADDR)/$(STATES)
+	rsync -azP $(TARGET_EXE) $(REMOTE_ADDR)/$(TARGET_EXE)
+	ssh goto "$(REMOTE_SCRIPT)"
+	scp $(REMOTE_ADDR)/$(PREDICATES_LOG) ./
 
 
 # -------------------------------------------------------------------------------
