@@ -3,6 +3,7 @@ module SymVector where
 import Data.IntMap.Strict as Map
 import Control.Monad
 import Data.Aeson
+import Test.QuickCheck
 
 --this is the qc file
 
@@ -22,6 +23,9 @@ instance (FromJSON a) => FromJSON (Vec a) where
 instance (ToJSON a) => ToJSON (Vec a) where
   toJSON (V m) = toJSON m
 
+instance (Arbitrary a) => Arbitrary (Vec a) where
+   arbitrary = do a <- arbitrary
+                  return $ mkVec a
 
 {-@ emptyVec :: forall <p :: Int -> a -> Prop>. Vec <{\v -> 0 = 1}, p> a @-}
 emptyVec     :: Vec  a

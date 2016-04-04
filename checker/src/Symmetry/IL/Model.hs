@@ -159,7 +159,7 @@ class ILModel e where
   rule     :: ConfigInfo a -> Pid -> e -> Maybe e -> e -> Rule e
 
   printModel :: (Identable a, Data a) => ConfigInfo a -> [Rule e] -> String
-  printCheck :: (Identable a, Data a) => ConfigInfo a -> [Rule e] -> String
+  --printCheck :: (Identable a, Data a) => ConfigInfo a -> [Rule e] -> String
 
 -------------------------
 -- "Macros"

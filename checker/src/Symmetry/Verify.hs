@@ -6,7 +6,7 @@ import Symmetry.SymbEx
 import Symmetry.IL.AST
 import Symmetry.IL.Model (generateModel)
 import Symmetry.IL.ConfigInfo
-import Symmetry.IL.Model.HaskellModel (printHaskell,printQCFile)
+import Symmetry.IL.Model.HaskellModel (printHaskell) -- printQCFile
 -- import Symmetry.IL.Unfold
 -- import Symmetry.IL.Inst
 -- import Symmetry.IL.TrailParser
@@ -130,7 +130,7 @@ runQC verb fp cwd
 copyOtherQCIncludes d =
   forM_ fns $ \fn -> do f <- getDataFileName ("checker" </> "include" </> fn)
                         copyFile f (d </> fn)
-  where fns = ["SymQCTH.hs", "TargetClient.hs", "Makefile"]
+  where fns = ["SymQCTH.hs", "TargetClient.hs", "Makefile", "QC.hs"]
 
 runVerifier opt outd
  | optVerify opt && optQC opt =
@@ -155,14 +155,7 @@ run1Cfg opt outd conf
          copyIncludes opt outd
          writeFile (outd </> "SymVerify.hs") f
          when (optQC opt)
-              (do
-                  -- let cfgList = (cfg cinfo')
-                  -- hPutDoc stdout $ pretty cfgList
-                  -- putStrLn ""
-                  -- hPutDoc stdout $ prettyList $ map (\(p, ss) -> (p, maximum (IM.keys ss))) cfgList
-                  -- return ()
-                  writeFile (outd </> "QC.hs") (printQCFile cinfo' m)
-                  copyOtherQCIncludes outd)
+              (copyOtherQCIncludes outd)
 
        runVerifier opt outd
   where

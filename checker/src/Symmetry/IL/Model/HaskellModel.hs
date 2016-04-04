@@ -564,7 +564,7 @@ instance ILModel HaskellModel where
   rule       = hRule
   matchVal   = hMatchVal
   printModel = printHaskell
-  printCheck = printQCFile
+  --printCheck = printQCFile
 
 ilExpPat :: ILExpr -> H.Pat
 ilExpPat (EPid q)
@@ -880,9 +880,11 @@ printHaskell ci rs = unlines [ header
                        , "import Control.Monad"
                        , "import Data.HashMap.Strict as H hiding (map,filter,null)"
                        , "import Data.Map.Strict as M"
+                       , "import qualified Data.HashMap.Strict as HM"
                        , "import GHC.Generics"
                        , "import qualified Data.Text as T"
                        , "import Text.Printf"
+                       , "import Data.Scientific"
                        ] ++
              (if isQC ci
                  then ["import Test.QuickCheck"
@@ -906,45 +908,11 @@ printHaskell ci rs = unlines [ header
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
                      ++ "\n" ++ jsonDecls
                      ++ "\n" ++ stVarDecl
+                     ++ "\n" ++ qcDefsStr (qcSamples ci) 500
+                     ++ "\n" ++ ifQC_l ci (prettyPrint $ runTestDecl ci)
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
 -- ######################################################################
-
-printQCFile :: (Data a, Identable a)
-            => ConfigInfo a -> [Rule HaskellModel] -> String
-printQCFile ci _
-  = unlines lhFile
-  where
-    sep    = concatMap (\s -> [s,""])
-    lhFile = sep (map unlines [header, spec])
-    header = [ "{-# Language RecordWildCards #-}"
-             , "{-# Language OverloadedStrings #-}"
-             , "{-# Language ScopedTypeVariables #-}"
-             , "module Main where"
-             , "import SymVector"
-             , "import SymMap"
-             , "import SymVerify"
-             , "import SymBoilerPlate"
-             , "import Test.QuickCheck"
-             , "import Data.Aeson"
-             , "import Data.Aeson.Encode.Pretty"
-             , "import Control.Monad"
-             , "import Data.ByteString.Lazy.Char8 as C (putStrLn, writeFile, appendFile, readFile)"
-             , "import Data.Maybe"
-             , "import Data.Either"
-             , "import Data.String"
-             , "import qualified Data.HashMap.Strict as HM"
-             , "import Data.Scientific"
-             , "import System.Directory"
-             , "import System.Exit"
-             ]
-    spec =
-              qcDefsStr (qcSamples ci) 500
-              -- qcDefsStr 10 20
-            : qcMainStr
-            : (prettyPrint  $  runTestDecl ci) : ""
-            : arbValStr : ""
-            : arbVecStr : "" : []
 
 emptyListCon = Con . Special $ ListCon
 unitCon      = Con . Special $ UnitCon
@@ -1109,52 +1077,13 @@ arbitraryPidPreDecl ci =
 -- ### "Static" functions to be included ##################################################
 qcDefsStr sample_size sched_length =
   unlines [ "fn = \"states.json\""
+          , "sample_size :: Int "
           , "sample_size = " ++ show sample_size
           , "sched_length = " ++ show sched_length
           , "type Run = [(State, Pid)]"
           , "type QCResult = (State, Either Run Run)"
           , printf "size_obj :: Object = HM.fromList [(\"stateCount\", Number $ scientific %d 0)]" (sample_size)
           ]
-
-qcMainStr="main :: IO () \n\
-\main = do b <- doesFileExist fn \n\
-\          when b (removeFile fn) \n\
-\\n\
-\          C.writeFile  fn (fromString \"var stateCount=\\n\") \n\
-\          C.appendFile fn (encode size_obj) \n\
-\          C.appendFile fn (fromString \"\\n\") \n\
-\          C.appendFile fn (fromString \"var states =\\n\") \n\
-\          C.appendFile fn (fromString \"[\\n\") \n\
-\\n\
-\          replicateM_ (sample_size-1) (printResult >> comma) \n\
-\          printResult \n\
-\          C.appendFile fn (fromString \"]\\n\") \n\
-\\n\
-\          exitSuccess \n\
-\\n\
-\          where printResult = do result <- runTest \n\
-\                                 when (isLeft $ snd result) exitFailure \n\
-\                                 C.appendFile fn (encode $ toJSON result) \n\
-\                                 newLine \n\
-\                newLine = C.appendFile fn (fromString \"\\n\") \n\
-\                comma   = C.appendFile fn (fromString \",\") \n\
-\"
-
-
-arbValStr = printf "instance (Arbitrary a) => Arbitrary (Val a) where \n\
-\  arbitrary = oneof [ return VUnit \n\
-\                    , return VUnInit \n\
-\                    , VInt    <$> %s \n\
-\                    , VString <$> arbitrary \n\
-\                    , VPid    <$> arbitrary \n\
-\                    , VInL    <$> arbitrary \n\
-\                    , VInR    <$> arbitrary \n\
-\                    , VPair   <$> arbitrary <*> arbitrary ]\n"
-                     (prettyPrint arbPos)
-
-arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
-\   arbitrary = do a <- arbitrary \n\
-\                  return $ mkVec a\n"
 
 stVarDecl="\
 \data StateVar = SInt   {sVarName :: String, sVarAcc  :: State -> Int}\n\

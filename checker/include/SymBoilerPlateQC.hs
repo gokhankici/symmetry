@@ -10,6 +10,7 @@ import Data.HashMap.Strict as H
 import System.IO.Unsafe
 import System.Random
 import GHC.Generics
+import Test.QuickCheck
 
 {-@ nonDet :: a -> x:Int -> {v:Int | 0 <= v && v < x } @-}
 nonDet :: a -> Int -> Int
@@ -52,6 +53,17 @@ data Val p = VUnit {}
 
 instance (FromJSON p) => FromJSON (Val p)
 instance (ToJSON p) => ToJSON (Val p)
+
+instance (Arbitrary a) => Arbitrary (Val a) where
+  arbitrary = oneof [ return VUnit
+                    , return VUnInit
+                    , VInt    <$> suchThat arbitrary (\ k -> (&&) ((<) 0 k) ((>) 5 k))
+                    , VString <$> arbitrary
+                    , VPid    <$> arbitrary
+                    , VInL    <$> arbitrary
+                    , VInR    <$> arbitrary
+                    , VPair   <$> arbitrary <*> arbitrary ]
+
 
 liquidAssert p x = if p
                      then Right x

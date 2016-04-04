@@ -62,9 +62,6 @@ data CandGroup = CandGroup { groupAntecedent  :: !Pred
                            , touchedGroup     :: !Bool
                            }
 
-type Run      = [(State, Pid)]
-type QCResult = (State, Either Run Run)
-
 data MainOptions = MainOptions { optStatesFile :: String
                                , optOutputFile :: String
                                , optPredCount  :: Int
