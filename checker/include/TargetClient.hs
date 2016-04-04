@@ -1,12 +1,9 @@
-{-
-  1. pc -> # of program counters
-  2.
--}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Main where
 
@@ -19,12 +16,15 @@ import           Control.Parallel.Strategies
 import           Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as C
 import           Data.Function
+import           GHC.Generics
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Map.Strict as M
 import           Data.Ix
 import           Data.List
 import           Data.Map.Strict (findWithDefault)
 import           Data.Maybe
 import qualified Data.Set as S
+import qualified Data.Text as T
 import           Options
 import           Test.QuickCheck
 import qualified Text.PrettyPrint.Leijen as P
@@ -37,23 +37,24 @@ data AIntOp = AIntEq -- =
             | AIntLe -- <=
             | AIntGt -- >
             | AIntGe -- >=
-            deriving (Eq,Ord)
+            deriving (Eq,Ord,Generic)
 
 data AInt = AIntSingle { svar :: StateVar}
           | AIntClass  { svar :: StateVar, classSize :: StateVar }
           | AConst Int               -- 0,1,...
-          deriving (Eq,Ord)
+          deriving (Eq,Ord,Generic)
 
 data Atom = IntCmp AInt AIntOp AInt
-            deriving (Eq,Ord)
+            deriving (Eq,Ord,Generic)
 
 data Pred = AndP { predConjuncts :: [Atom] }
           | NegP { negatedPred   :: Pred   }
+          deriving (Generic)
 
 data Grammar = Imp { antecedent :: Pred
                    , consequent :: Pred
                    }
-               deriving (Eq)
+               deriving (Eq,Generic)
 
 -- implications that have the same antecedent
 data CandGroup = CandGroup { groupAntecedent  :: !Pred
@@ -65,30 +66,40 @@ type Run      = [(State, Pid)]
 type QCResult = (State, Either Run Run)
 
 data MainOptions = MainOptions { optStatesFile :: String
+                               , optOutputFile :: String
                                , optPredCount  :: Int
+                               , optErr1       :: Bool
+                               , optErr2       :: Bool
                                }
 
 instance Options MainOptions where
   defineOptions
-    = MainOptions <$> simpleOption "states-file" "states.json" "JSON file that stores execution traces"
-                  <*> simpleOption "pred-count"  100000        "Number of predicates that randomly generated"
+    = MainOptions <$> simpleOption "states-file" "states.json"     "JSON file that stores execution traces"
+                  <*> simpleOption "output-file" "predicates.json" "JSON file that stores execution traces"
+                  <*> simpleOption "pred-count"  100000            "Number of predicates that randomly generated"
+                  <*> simpleOption "err1" False "S ⊧ I ∧ ¬ S ⊧ A"
+                  <*> simpleOption "err2" False "S ⊧ I ∧ ¬ next(S) ⊧ I"
+
 
 -- ######################################################################
 -- Main loop, finding invariants
 -- ######################################################################
 
-
 main :: IO ()
-main  = runCommand $ \opts _ ->
-          do bs <- C.readFile (optStatesFile opts)
-             gs <- generate (vectorOf (optPredCount opts) grammar_gen)
-             let (n,bs') = extractStateCount bs
-                 preds   = filterGrammars n bs' gs
+main  = runCommand cmd
+        where cmd opts _
+                | optErr1 opts = undefined
+                | optErr2 opts = checkErr2 opts
+                | otherwise    = storeCandidateInvariants opts
 
-             printf "size of predicates %d\n" (length preds)
-             forM_ preds (\i -> do P.putDoc $ P.pretty i
-                                   printf "\n\n")
+storeCandidateInvariants :: MainOptions -> IO ()
+storeCandidateInvariants opts =
+  do bs <- C.readFile (optStatesFile opts)
+     gs <- generate (vectorOf (optPredCount opts) grammar_gen)
+     let (n,bs') = extractStateCount bs
+         preds   = filterGrammars n bs' gs
 
+     C.writeFile (optOutputFile opts) (encode preds)
 
 extractStateCount :: C.ByteString -> (Int, C.ByteString)
 extractStateCount bs =
@@ -183,7 +194,7 @@ readState bs  =
 
 -- ######################################################################
 -- Predicate Generation
-
+-- ######################################################################
 
 grammar_gen :: Gen Grammar
 grammar_gen  = Imp <$> lhs_gen <*> rhs_gen
@@ -267,6 +278,7 @@ sVarToInt (v,n) = if isAbs n
                   then AIntClass  v (getClassN n)
                   else AIntSingle v
 
+
 -- ######################################################################
 -- Helper functions
 -- ######################################################################
@@ -290,6 +302,7 @@ bsDropLine bs = C.drop 1 $ C.dropWhile (/= '\n') bs
 
 applyN      :: Int -> (a -> a) -> a -> a
 applyN n f a = foldl' (\a' _ -> f $ a') a [1..n]
+
 
 -- ######################################################################
 -- Predicate Evaluator
@@ -320,6 +333,7 @@ instance Checkable Pred where
 
 instance Checkable Grammar where
   check (Imp l r) s = (not $ check l s) || (check r s)
+
 
 -- ######################################################################
 -- Some instances
@@ -380,25 +394,32 @@ instance P.Pretty Grammar where
 instance Show StateVar where
   show = sVarName
 
+
+-- ######################################################################
+-- JSON
+-- ######################################################################
+
+instance ToJSON AIntOp
+instance ToJSON AInt
+instance ToJSON Atom
+instance ToJSON Pred
+instance ToJSON Grammar
+
+instance FromJSON AIntOp
+instance FromJSON AInt
+instance FromJSON Atom
+instance FromJSON Pred
+instance FromJSON Grammar
+
+
 -- ######################################################################
 -- Test
 -- ######################################################################
 
+checkErr2 :: MainOptions -> IO ()
+checkErr2 opts =
+  do bs <- C.readFile (optOutputFile opts)
+     let Just preds = decode bs :: Maybe [Grammar]
 
--- testGrammarFilter states =
---   let ((pc0,_):_)      = thisPcs
---       (_:(pc1,_):_)    = thisPcs
---       (((k2,_,_),_):_) = thisAbs
---       ((i0,_):_)       = thisInts
---       (_:(i1,_):_)     = thisInts
---       lhs = AndP [ IntCmp (AIntSingle pc0) AIntEq (AConst (-1))
---                  , IntCmp (AIntClass pc1 k2) AIntEq (AConst 0) ]
---       rhs1 = AndP [IntCmp (AIntSingle i0) AIntLe (AIntSingle i1)]
---       rhs2 = AndP [IntCmp (AIntSingle i0) AIntGt (AIntSingle i1)]
-
---       gs1 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
---                 rhs1 -- (xl0 ≤ xl1)
---       gs2 = Imp lhs  -- (pidR0Pc = -1 ∧ pidR2Pc[pidR2K] = 0)
---                 rhs2 -- (xl0 > xl1)
---       gs  = [gs1, gs2]
---   in filterGrammars gs states
+     forM_ preds (\i -> do P.putDoc $ P.pretty i
+                           printf "\n\n")

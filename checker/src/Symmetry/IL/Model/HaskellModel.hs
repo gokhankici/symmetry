@@ -881,6 +881,8 @@ printHaskell ci rs = unlines [ header
                        , "import Data.HashMap.Strict as H hiding (map,filter,null)"
                        , "import Data.Map.Strict as M"
                        , "import GHC.Generics"
+                       , "import qualified Data.Text as T"
+                       , "import Text.Printf"
                        ] ++
              (if isQC ci
                  then ["import Test.QuickCheck"
@@ -900,6 +902,7 @@ printHaskell ci rs = unlines [ header
                    , initSpecOfConfig ci
                    ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
+                     ++ "\n" ++ ifQC_l ci (prettyPrint $ showVars ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
                      ++ "\n" ++ jsonDecls
                      ++ "\n" ++ stVarDecl
@@ -1154,9 +1157,20 @@ arbVecStr="instance (Arbitrary a) => Arbitrary (Vec a) where \n\
 \                  return $ mkVec a\n"
 
 stVarDecl="\
-\data StateVar = SInt  {sVarName :: String, sVarAcc  :: State -> Int}\n\
-\              | SInt2 {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n\
-\              | SSet  {sVarName :: String, sVarAccS :: State -> S.Set Int}\n"
+\data StateVar = SInt   {sVarName :: String, sVarAcc  :: State -> Int}\n\
+\              | SInt2  {sVarName :: String, sVarAcc2 :: State -> Map_t Int Int}\n\
+\              | SSet   {sVarName :: String, sVarAccS :: State -> S.Set Int}\n\
+\\n\
+\instance ToJSON StateVar where\n\
+\  toJSON sv = toJSON (sVarName sv)\n\
+\\n\
+\instance FromJSON StateVar where\n\
+\  parseJSON (String t) = let s = T.unpack t\n\
+\                         in return $\n\
+\                              M.findWithDefault (error $ printf \"Cannot find %s in state\" s)\n\
+\                                                s\n\
+\                                                allStateVars\n\
+\  parseJSON _          = mzero\n"
 
 jsonDecls="\
 \instance FromJSON State \n\
@@ -1164,6 +1178,7 @@ jsonDecls="\
 \instance FromJSON Pid \n\
 \instance ToJSON Pid \n"
 
+litS    = Lit . String
 mkI p s = if p then mkI2 s else mkI1 s
 mkI1 s  = appFun (var $ name "SInt")  [Lit $ String s, var $ name s]
 mkI2 s  = appFun (var $ name "SInt2") [Lit $ String s, var $ name s]
@@ -1251,3 +1266,30 @@ printPCCounts ci = FunBind [pcs]
                                                       in  intE maxPcI ])
                                   (cfg ci)
         pno  = pno' ci
+
+showVars   :: ConfigInfo a -> Decl
+showVars ci = FunBind [mvars]
+  where mvars  = Match noLoc (name "allStateVars") [] Nothing mvarsE Nothing
+        things = withStateFields ci SFV { combine  = concat
+                                        , absF     = absF
+                                        , pcF      = pcF
+                                        , ptrF     = ptrF
+                                        , valF     = valF
+                                        , intF     = intF
+                                        , globF    = globF
+                                        , globIntF = globIntF }
+
+        absF _ b unf pcv = [ tuple [litS b,   mkI1 b]
+                           , tuple [litS unf, mkI2 unf]
+                           , tuple [litS pcv, mkS pcv]]
+        pcF      p pcN   = [tuple [litS pcN, mkI (isAbs p) pcN]]
+        ptrF     p r w   = let m = mkI (isAbs p)
+                           in [ tuple [litS r, m r]
+                              , tuple [litS w, m w] ]
+        valF     p v     = [] -- [tuple [litS v, mkI (isAbs p) v]]
+        intF     p v     = [tuple [litS v, mkI (isAbs p) v]]
+        globF    v       = [] -- [("glob", strE v)]
+        globIntF v       = [] -- [("globI", strE v)]
+
+        mvarsE = UnGuardedRhs $ app (var $ name "M.fromList")
+                              $ listE things
