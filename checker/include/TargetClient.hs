@@ -15,8 +15,9 @@ import           Control.Monad
 import           Control.Parallel.Strategies
 import           Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as C
+import           Data.Either
+import qualified Data.Foldable as DF
 import           Data.Function
-import           GHC.Generics
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import           Data.Ix
@@ -25,7 +26,9 @@ import           Data.Map.Strict (findWithDefault)
 import           Data.Maybe
 import qualified Data.Set as S
 import qualified Data.Text as T
+import           GHC.Generics
 import           Options
+import           System.Exit
 import           Test.QuickCheck
 import qualified Text.PrettyPrint.Leijen as P
 import           Text.Printf
@@ -413,6 +416,8 @@ instance FromJSON Grammar
 -- Test
 -- ######################################################################
 
+repeat2 = 100000
+
 checkErr2 :: MainOptions -> IO ()
 checkErr2 opts =
   do bs <- C.readFile (optOutputFile opts)
@@ -420,3 +425,37 @@ checkErr2 opts =
 
      forM_ preds (\i -> do P.putDoc $ P.pretty i
                            printf "\n\n")
+
+     replicateM_ repeat2 $
+       do (s,trace) <- runTest
+          when (checkGrammars preds s && isRight trace)
+               (checkTrace preds (fromRight trace))
+
+
+checkTrace         :: [Grammar] -> Run -> IO ()
+checkTrace ps trace =
+  do let (s0,_) = head trace
+     when (badState s0) (err s0)
+     DF.traverse_ checkNext (zip trace (tail trace))
+     where badState = not . (checkGrammars ps)
+           checkNext ((s,_),(s',_)) =
+             when (badState s')
+                  (err2 s s')
+
+err  :: State -> IO ()
+err s = do printf "!!! ERROR !!!\n"
+           printf "%s\n" (show s)
+           exitFailure
+
+err2  :: State -> State -> IO ()
+err2 s s' = do printf "!!! ERROR !!!\n"
+               printf "prev = %s\n" (show s)
+               printf "next = %s\n" (show s')
+               exitFailure
+
+checkGrammars     :: [Grammar] -> State -> Bool
+checkGrammars ps s = all (flip check s) ps
+
+fromRight x = case x of
+                Right v -> v
+                Left  v -> error "this is not right"

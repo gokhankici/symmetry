@@ -906,7 +906,7 @@ printHaskell ci rs = unlines [ header
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ showVars ci)
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
-                     ++ "\n" ++ jsonDecls
+                     ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls)
                      ++ "\n" ++ stVarDecl
                      ++ "\n" ++ qcDefsStr (qcSamples ci) 500
                      ++ "\n" ++ ifQC_l ci (prettyPrint $ runTestDecl ci)
@@ -957,11 +957,6 @@ runTestDecl ci =
         pidChoose p = metaFunction (pidBound p) [vExp "s"]
         pidCons p   = Con . UnQual $ name (pidConstructor p) 
         retExp      = tuple [vExp "s", rs_app]
-                         -- ret_exp
-        -- -- (reverse l, sched)
-        -- retExp    = Tuple Boxed [ cons (vExp "s") (app (varn "reverse") (varn "l"))
-        --                         , varn "sched"
-        --                         ]
 
 
 -- ### Arbitrary instances ##################################################
@@ -982,9 +977,6 @@ arbPos  = appFun (vExp "suchThat") [ vExp arbFn
                 lt_max = appFun (sExp ">") [m, k]
                 k      = vExp "k"
                 m      = intE $ toInteger arbIntMax
-
--- arbPos :: Exp
--- arbPos  = fmap_syn (vExp "getPositive") arbIntExp
 
 arbZero :: Exp
 arbZero = metaFunction "return" [intE 0]
@@ -1077,11 +1069,14 @@ arbitraryPidPreDecl ci =
 -- ### "Static" functions to be included ##################################################
 qcDefsStr sample_size sched_length =
   unlines [ "fn = \"states.json\""
+          , ""
           , "sample_size :: Int "
-          , "sample_size = " ++ show sample_size
+          , "sample_size  = " ++ show sample_size
           , "sched_length = " ++ show sched_length
-          , "type Run = [(State, Pid)]"
+          , ""
+          , "type Run      = [(State, Pid)]"
           , "type QCResult = (State, Either Run Run)"
+          , ""
           , printf "size_obj :: Object = HM.fromList [(\"stateCount\", Number $ scientific %d 0)]" (sample_size)
           ]
 
@@ -1101,11 +1096,12 @@ stVarDecl="\
 \                                                allStateVars\n\
 \  parseJSON _          = mzero\n"
 
-jsonDecls="\
-\instance FromJSON State \n\
-\instance ToJSON State \n\
-\instance FromJSON Pid \n\
-\instance ToJSON Pid \n"
+qname  = UnQual . name
+tvname = TyCon . UnQual . name
+
+jsonDecls :: [Decl]
+jsonDecls =  [mkIns tc tv | tc <- ["FromJSON", "ToJSON"], tv <- ["State", "Pid"]]
+             where mkIns tc tv = InstDecl noLoc Nothing [] [] (qname tc) [tvname tv] []
 
 litS    = Lit . String
 mkI p s = if p then mkI2 s else mkI1 s

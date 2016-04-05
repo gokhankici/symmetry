@@ -53,6 +53,20 @@ run-on-goto: $(TARGET_EXE)
 	scp $(REMOTE_ADDR)/$(PREDICATES_LOG) ./
 	scp $(REMOTE_ADDR)/$(PREDICATES)     ./
 
+define REMOTE_SCRIPT_ERR2
+cd $(REMOTE_FOLDER_NAME) &&    \
+./$< --pred-count $(PREDCOUNT) \
+	 --err2                    \
+     +RTS -M$(MAX_MEM) -RTS    \
+     2>&1 1>$(PREDICATES_LOG)
+endef
+
+run-on-goto-err2: $(TARGET_EXE)
+	test -e $(PREDICATES)
+	rsync -azP $(PREDICATES) $(REMOTE_ADDR)/$(PREDICATES)
+	rsync -azP $(TARGET_EXE) $(REMOTE_ADDR)/$(TARGET_EXE)
+	ssh goto "$(REMOTE_SCRIPT_ERR2)"
+	scp $(REMOTE_ADDR)/$(PREDICATES_LOG) ./
 
 # -------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------
