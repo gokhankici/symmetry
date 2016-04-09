@@ -5,6 +5,7 @@ module SymBoilerPlate where
 import SymMap
 import Control.Monad
 import Data.Aeson
+import Data.Either
 import Data.HashMap.Strict as H
 
 import System.IO.Unsafe
@@ -105,3 +106,7 @@ isVPair _         = False
 {-@ measure isVInL    @-}
 {-@ measure isVInR    @-}
 {-@ measure isVPair   @-}
+
+eitherMap :: (a->a') -> (b->b') -> (Either a b) -> (Either a' b')
+eitherMap fl _ (Left a)  = Left  (fl a)
+eitherMap _ fr (Right b) = Right (fr b)

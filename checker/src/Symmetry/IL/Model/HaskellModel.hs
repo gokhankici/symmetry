@@ -808,7 +808,7 @@ transitionRule ci (p, t, assert, updates)
   = if isAbs p then
       unlines [ printf "{-@ assume %s :: s0:{v:State | %s} -> %s:Int -> %s{s1:State | %s} @-}" t pre (pidIdx p) xtraSpec fieldUpdates
               , printf "%s :: State -> Int -> %sState" t xtraTy
-              , prettyPrint tx 
+              , prettyPrint tx
               ]
     else
       unlines [ printf "{-@ assume %s :: s0:{v:State | %s} -> %s{s1:State | %s} @-}" t pre xtraSpec fieldUpdates 
@@ -835,7 +835,7 @@ transitionRule ci (p, t, assert, updates)
                        | otherwise                   -> printf "%s s1 = %s" f (readExp f)
                      Nothing -> printf "%s s1 = %s s0" f f
 
-    printLine = prettyPrintWithMode defaultMode { layout = PPNoLayout }                                                   
+    printLine = prettyPrintWithMode defaultMode { layout = PPNoLayout }
 
     tx   = FunBind [body]
     body = runStateMatch t args (UnGuardedRhs (mkAssert (ExpM <$> assert) recUp))
@@ -902,14 +902,18 @@ printHaskell ci rs = unlines [ header
                    , transitionRules ci ruleSt
                    , ""
                    , initSpecOfConfig ci
-                   ] ++ ifQC_l ci (unlines $ prettyPrint <$> arbitraryDecls ci)
-                     ++ "\n" ++ ifQC_l ci (prettyPrint $ showAbss ci)
-                     ++ "\n" ++ ifQC_l ci (prettyPrint $ showVars ci)
-                     ++ "\n" ++ ifQC_l ci (prettyPrint $ printPCCounts ci)
-                     ++ "\n" ++ ifQC_l ci (unlines $ prettyPrint <$> jsonDecls)
-                     ++ "\n" ++ stVarDecl
-                     ++ "\n" ++ qcDefsStr (qcSamples ci) 500
-                     ++ "\n" ++ ifQC_l ci (prettyPrint $ runTestDecl ci)
+                   ]
+           ++ "\n" ++ stVarDecl
+           ++ "\n" ++ qcDefsStr (qcSamples ci) 500
+           ++ (unlines $ ifQC_l ci (prettyPrint <$> qcDecls))
+    qcDecls = arbitraryDecls ci ++ jsonDecls ++
+              [ showAbss ci
+              , showVars ci
+              , printPCCounts ci
+              , runTestDecl ci
+              ] ++
+              deadlockRuleDecl ci
+
 -- ######################################################################
 -- ### QUICK CHECK ######################################################
 -- ######################################################################
@@ -937,8 +941,10 @@ runTestDecl ci =
         -- turn buffers into empty vectors
         bufs       = [ emptyVec p | p <- pids ci, _ <- tyMap ci ]
         -- runState s ... plist []
-        rs_app     = appFun (varn runState)
-                            ((varn "s") : bufs ++ [varn "sched", emptyListCon])
+        rs_app     = infixApp (metaFunction "eitherMap" [vExp "reverse", vExp "reverse"])
+                              (op . sym $ "$")
+                              $ appFun (varn runState)
+                                       ((varn "s") : bufs ++ [varn "sched", emptyListCon])
         -- let l = runState ... in ...
         rhs = Do [ Generator noLoc (pvarn "s") stateGen
                  , Generator noLoc (pvarn "sched") schedGen
@@ -1218,3 +1224,21 @@ showVars ci = FunBind [mvars]
 
         mvarsE = UnGuardedRhs $ app (var $ name "M.fromList")
                               $ listE things
+
+
+deadlockRuleN = "deadlockRule"
+
+deadlockRuleDecl   :: (Data a, Identable a) => ConfigInfo a -> [Decl]
+deadlockRuleDecl ci =
+  [FunBind [mkDlMatch], FunBind [totalMatch]]
+  where (ExpM cond, ExpM done) = deadlockFree ci
+        mkDlMatch = Match noLoc (name deadlockRuleN) dlpat Nothing (GuardedRhss [dlRhs]) Nothing
+        dlRhs = GuardedRhs noLoc [Qualifier cond] done
+        dlpat = [PAsPat (name state) (PRec (UnQual (name stateRecordCons)) [PFieldWildcard])] ++
+                [PList [pidPattern p | p <- ps]]
+        safetyCheck e = metaFunction "liquidAssert" [e]
+        ps = concat [[univAbs p, extAbs p] | p <- pids ci, isAbs p ]
+
+        totalMatch = Match noLoc (name deadlockRuleN) totPat Nothing (UnGuardedRhs totRhs) Nothing
+        totPat = [PWildCard, PWildCard]
+        totRhs = Con $ UnQual $ name "True"

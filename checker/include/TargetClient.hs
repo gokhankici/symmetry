@@ -68,8 +68,7 @@ data CandGroup = CandGroup { groupAntecedent  :: !Pred
 data MainOptions = MainOptions { optStatesFile :: String
                                , optOutputFile :: String
                                , optPredCount  :: Int
-                               , optErr1       :: Bool
-                               , optErr2       :: Bool
+                               , optErr       :: Bool
                                }
 
 instance Options MainOptions where
@@ -77,8 +76,7 @@ instance Options MainOptions where
     = MainOptions <$> simpleOption "states-file" "states.json"     "JSON file that stores execution traces"
                   <*> simpleOption "output-file" "predicates.json" "JSON file that stores execution traces"
                   <*> simpleOption "pred-count"  100000            "Number of predicates that randomly generated"
-                  <*> simpleOption "err1" False "S ⊧ I ∧ ¬ S ⊧ A"
-                  <*> simpleOption "err2" False "S ⊧ I ∧ ¬ next(S) ⊧ I"
+                  <*> simpleOption "err" False "(S ⊧ I ∧ ¬ S ⊧ A) OR (S ⊧ I ∧ ¬ next(S) ⊧ I)"
 
 
 -- ######################################################################
@@ -88,9 +86,8 @@ instance Options MainOptions where
 main :: IO ()
 main  = runCommand cmd
         where cmd opts _
-                | optErr1 opts = undefined
-                | optErr2 opts = checkErr2 opts
-                | otherwise    = storeCandidateInvariants opts
+                | optErr opts = checkErr opts
+                | otherwise   = storeCandidateInvariants opts
 
 storeCandidateInvariants :: MainOptions -> IO ()
 storeCandidateInvariants opts =
@@ -418,8 +415,8 @@ instance FromJSON Grammar
 
 repeat2 = 100000
 
-checkErr2 :: MainOptions -> IO ()
-checkErr2 opts =
+checkErr :: MainOptions -> IO ()
+checkErr opts =
   do bs <- C.readFile (optOutputFile opts)
      let Just preds = decode bs :: Maybe [Grammar]
 
