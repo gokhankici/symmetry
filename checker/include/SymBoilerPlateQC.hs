@@ -81,7 +81,7 @@ liquidAssert p x = if p
                      then Right x
                      else Left x
 
-isVUnit, isVUnInit, isVInt, isVString, isVPid, isVInR, isVInL, isVPair :: Val p -> Bool
+isVUnit, isVUnInit, isVInt, isVString, isVPid, isVInR, isVInL, isVPair, isVSet :: Val p -> Bool
 isVUnit VUnit{} = True
 isVUnit _       = False
 
@@ -93,6 +93,9 @@ isVInt _      = False
 
 isVString VString{} = True
 isVString _         = False
+
+isVSet VSet{} = True
+isVSet _      = False
 
 isVPid VPid{} = True
 isVPid _         = False
