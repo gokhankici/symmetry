@@ -36,6 +36,8 @@ data PrologExpr = PLTerm   { pTermName :: String }
                 | PLComment { pInline :: Bool
                             , pLines :: [String] }
 
+                deriving (Show)
+
 data PrologStmt = PLImport { importedFile      :: String
                            , importedFunctions :: [PrologStmt] }
                 | PLRule   { pStmtName :: String
@@ -43,6 +45,7 @@ data PrologStmt = PLImport { importedFile      :: String
                            , ruleBody  :: PrologExpr   }
                 | PLFact   { pStmtName :: String
                            , pStmtArgs :: [PrologExpr] }
+                deriving (Show)
 
 dummyArg  :: Int -> [PrologExpr]
 dummyArg n = replicate n PLNull
@@ -138,7 +141,7 @@ printProlog ci
 rewrite :: (Data a, P.Pretty a) => Config a -> PrologStmt
 rewrite ci
   = PLRule "rewrite_query"
-           [PLVar "T", PLTerm "skip", PLTerm "[]", PLVar "Name"]
+           [PLVar "T", PLTerm "skip", PLList [], PLVar "Name"]
            $ PLAnd [ PLAsgn (PLVar "T") $ toPrologExpr ci
                    , PLAsgn (PLVar "Name") (PLTerm "verify") ]
 
@@ -408,7 +411,7 @@ instance Prolog PrologStmt where
                _  -> tupled (encodeProlog <$> pStmtArgs)
 
 instance Prolog PrologExpr where
-  encodeProlog (PLTerm {..})   =
+  encodeProlog e@(PLTerm {..})   =
     assert (length pTermName > 0 && (isLower $ head pTermName))
            (text pTermName)
   encodeProlog (PLVar {..})    =
