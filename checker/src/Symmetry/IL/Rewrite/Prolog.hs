@@ -69,6 +69,7 @@ catch_rule              = mkQuery "catch" 3
 send_rule    = mkQuery "send"   3 -- send(p, x, v)
 send_t_rule  = mkQuery "send"   4 -- send(p, x, type, v)
 recv_rule    = mkQuery "recv"   2 -- recv(p, v)
+recv_t_rule  = mkQuery "recv"   3 -- recv(p, type, v)
 recv_f_rule  = mkQuery "recv"   3 -- recv(p, x, v)
 recv_ft_rule = mkQuery "recv"   4 -- recv(p, x, type, v)
 sym_rule     = mkQuery "sym"    3 -- sym(P, S, A)
@@ -81,6 +82,7 @@ ite_rule     = mkQuery "ite"    4 -- ite(P, Cond, A, B)
 if_rule      = mkQuery "if"     3 -- if(P, Cond, A)
 skip_rule    = mkQuery "skip"   0  -- skip
 pair_rule    = mkQuery "pair"   2 -- pair(x, y)
+ty_rule      = mkQuery "type"   1
 
 -- make sure that argument is a single list
 par_rule l@[PLList _] = mkQuery "par" 1 l -- par([A,B,C])
@@ -149,6 +151,36 @@ rewrite ci
 -- Symmetry to PrologExpr
 -- -----------------------------------------------------------------------------
 
+-- -----------------------------------------------------------------------------
+-- Helper function to convert iters into fors for great rewrite justice
+-- -----------------------------------------------------------------------------
+rewriteIters :: forall a. (Data a, P.Pretty a) => Config a -> Config a
+rewriteIters c
+  = c { cProcs = everywhere (mkT rewriteIter) (cProcs c) }
+  where
+    pidSets = [ absSet p | p <- fst <$> cProcs c, isAbs p ]
+    bounds  = cSetBounds c
+
+    rewriteIter :: Stmt a -> Stmt a
+    rewriteIter s@Iter{}
+      = s { iterSet = replacePids (iterSet s) } 
+      where
+        replacePids s'@(SIntParam v)
+          | [a] <- gather v
+          , iterVar s `notElem` unboundVars s
+          = a
+          | otherwise
+          = s'
+        replacePids x
+          = x
+        gather v = [ s
+                   | s <- pidSets
+                   , (Unknown s' v') <- bounds
+                   , s == s'
+                   , v == v'
+                   ]
+    rewriteIter s = s
+
 class ToPrologExpr a where
   toPrologExpr :: a -> PrologExpr
 
@@ -175,8 +207,12 @@ debug x = trace str x
     doc  = P.pretty x
 
 instance ToPrologExpr Var where
-  toPrologExpr (V v)  = PLTerm v
-  toPrologExpr (GV v) = PLTerm v
+  toPrologExpr (V v)
+    | isUpper (head v) = PLVar v
+    | otherwise        = PLTerm v
+  toPrologExpr (GV v) 
+    | isUpper (head v) = PLVar v
+    | otherwise        = PLTerm v
   toPrologExpr v      = unhandled v
 
 instance ToPrologExpr Set where
@@ -222,6 +258,10 @@ instance ToPrologExpr Pat where
     = pair_rule [toPrologExpr t, toPrologExpr x]
   toPrologExpr (PSum t (PBase x) (PBase y))
     = pair_rule [toPrologExpr t, toPrologExpr x]
+  toPrologExpr (PSum t (PBase x) _)
+    = pair_rule [toPrologExpr t, toPrologExpr x] -- gulp
+  toPrologExpr (PSum t x _)
+    = pair_rule [toPrologExpr t, toPrologExpr x] -- gulp
   toPrologExpr (PProd _ x y)
     = pair_rule [toPrologExpr x, toPrologExpr y]
   toPrologExpr (PBase x)
@@ -231,6 +271,8 @@ instance ToPrologExpr Type where
   toPrologExpr TUnit        = PLTerm "unit"
   toPrologExpr TInt         = PLTerm "int"
   toPrologExpr TPid         = PLTerm "pid"
+  toPrologExpr TString      = PLTerm "str"
+  toPrologExpr (TLift s t)  = mkQuery "tapp" 2 [PLTerm (toLower <$> s), toPrologExpr t]
   toPrologExpr (TSum t1 t2) = sum [ toPrologExpr t1, toPrologExpr t2 ]
     where
       sum = mkQuery "sum_ty" 2
@@ -244,17 +286,18 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
   toPrologExpr (_, Die{})
     = mkQuery "die" 0 []
   toPrologExpr (p, Send{sndPid = q, sndMsg = (t,e)})
-    = send_rule [who,to,msg]
+    = send_t_rule [who,to,ty,msg]
     where
       who = toPrologExpr p
       msg = toPrologExpr e
       to  = toPrologExprPid q
       ty  = toPrologExpr t
   toPrologExpr (p, Recv{rcvMsg = (t,pat)})
-    = recv_rule [who,var]
+    = recv_t_rule [who,ty,var]
     where
       var = prologRecv (t,pat)
       who = toPrologExpr p
+      ty  = ty_rule [toPrologExpr t]
   toPrologExpr (p, Block{blkBody = body})
     = seq_rule [PLList $ (toPrologExpr . (p,)) <$> body]
 
@@ -329,6 +372,13 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
                   , toPrologExpr rhs
                   ]
 
+  toPrologExpr (p, NonDet { nonDetBody = [s1,s2] })
+    = ite_rule [ toPrologExpr p
+               , mkQuery "nondet" 1 [PLNull]
+               , toPrologExpr (p,s1)
+               , toPrologExpr (p,s2)
+               ]
+
   toPrologExpr p  = unhandled p
 
 instance ToPrologExpr LVar where
@@ -338,9 +388,11 @@ instance ToPrologExpr Int where
   toPrologExpr i = PLTerm (show i)
 
 instance (Data a, P.Pretty a) => ToPrologExpr (Config a) where
-  toPrologExpr Config{ cProcs = ps }
+  toPrologExpr cfg
     = par_rule [PLList (prologProcess <$> ps'')]
       where
+        cfg'  = rewriteIters cfg
+        ps    = cProcs cfg'
         ps'   = everywhere (mkT toUpperPAbs) <$>  ps
         ps''  = toUpperIterVarProc           <$>  ps'
 
@@ -411,9 +463,11 @@ instance Prolog PrologStmt where
                _  -> tupled (encodeProlog <$> pStmtArgs)
 
 instance Prolog PrologExpr where
-  encodeProlog e@(PLTerm {..})   =
-    assert (length pTermName > 0 && (isLower $ head pTermName))
+  encodeProlog (PLTerm {..}) =
+    assert (length pTermName > 0 && (not (isUpper $ head pTermName)))
            (text pTermName)
+    where
+      err = error pTermName
   encodeProlog (PLVar {..})    =
     assert (length pVarName > 0 && (isUpper $ head pVarName))
            (text pVarName)
