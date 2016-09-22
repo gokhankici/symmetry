@@ -24,6 +24,7 @@ infty = 2
 data Set = S { setName :: String }
          | SV Var
          | SInts Int
+         | SIntParam Var
            deriving (Ord, Eq, Read, Show, Typeable, Data)
 
 data Var = V String  -- Local Var
@@ -68,12 +69,10 @@ data Type = TUnit | TInt | TString | TPid | TPidMulti | TProd Type Type | TSum T
           | TLift String Type
              deriving (Ord, Eq, Read, Show, Typeable, Data)
 
-data Pat = PUnit
-           | PInt Var
-           | PPid Var
-           | PProd Pat Pat
-           | PSum  Pat Pat
-             deriving (Ord, Eq, Read, Show, Typeable, Data)
+data Pat = PBase Var
+         | PProd Var Pat Pat
+         | PSum  Var Pat Pat
+           deriving (Ord, Eq, Read, Show, Typeable, Data)
 
 data Pred = ILBop Op ILExpr ILExpr
           | ILAnd Pred Pred
@@ -184,7 +183,7 @@ data Stmt a = Skip { annot :: a }
                     , annot  :: a
                     }
 
-            | Recv  { rcvMsg :: (Type, Var)
+            | Recv  { rcvMsg :: (Type, Pat)
                     , annot  :: a
                     }
 
@@ -210,8 +209,8 @@ data Stmt a = Skip { annot :: a }
                      }
 
             | Assert { assertPred :: Pred
-                      , annot :: a
-                      }
+                     , annot :: a
+                     }
 
              -- x := p1 == p2;
             | Compare { compareVar :: Var
@@ -233,9 +232,9 @@ data Stmt a = Skip { annot :: a }
                      }
 
             | Assign { assignLhs :: Var
-                      , assignRhs :: ILExpr
-                      , annot :: a
-                      }
+                     , assignRhs :: ILExpr
+                     , annot :: a
+                     }
 
             | Die { annot :: a }
             {- These do not appear in the source: -}
@@ -259,6 +258,18 @@ data Config a = Config {
   , cProcs      :: [Process a]
   } deriving (Eq, Read, Show, Data, Typeable)
 
+-------------------------------------------------
+-- | Sequence Statements
+-------------------------------------------------
+seqStmt :: Stmt () -> Stmt () -> Stmt ()
+
+seqStmt (Skip _) s = s
+seqStmt s (Skip _) = s
+seqStmt (Block ss _) (Block ss' _) = Block (ss ++ ss') ()
+seqStmt s (Block ss _) = Block (s : ss) ()
+seqStmt (Block ss _) s = Block (ss ++ [s]) ()
+seqStmt s1 s2 = Block [s1, s2] ()
+
 unboundVars :: forall a. Data a => Stmt a -> [Var]
 unboundVars s
   = allvars \\ (bound ++ absIdx)
@@ -267,7 +278,7 @@ unboundVars s
     bound   = nub $ everything (++) (mkQ [] go) s
     absIdx  = nub $ everything (++) (mkQ [] goAbs) s
     go :: Data a => Stmt a -> [Var]
-    go (Recv (_,x) _) = [x]
+    go (Recv (_,x) _) = vars x
     go (i@Iter {})    = [iterVar i]
     go (i@Choose {})  = [chooseVar i]
     go (i@Case {})    = [caseLPat i, caseRPat i]
@@ -286,7 +297,7 @@ unboundSets s
     isSetVar _           = False
     boundSetVars         = nub $ everything (++) (mkQ [] go) s
     go :: Data a => Stmt a -> [Set]
-    go (Recv (_, V x) _)= [S x] -- TODO
+    go (Recv (_, p) _)= [S x | V x <- vars p] -- TODO
     go _                 = []
 
 endLabels :: (Data a, Typeable a) => Stmt a -> [LVar]
@@ -453,6 +464,7 @@ instance Pretty Set where
   pretty (S x)   = text x
   pretty (SV x)  = pretty x
   pretty (SInts n) = brackets (int 1 <+> text ".." <+> int n)
+  pretty (SIntParam n) = brackets (int 1 <+> text ".." <+> pretty n)
 
 instance Pretty Pid where
   pretty (PConc x)
@@ -494,11 +506,11 @@ instance Pretty ILExpr where
   pretty (EProj2 e) = text "π₂" <> parens (pretty e)
 
 instance Pretty Pat where
-  pretty (PUnit )      = text "()"
-  pretty (PInt v)      = text "int" <+> pretty v
-  pretty (PPid v)      = text "pid" <+> pretty v
-  pretty (PSum p1 p2)  = parens (pretty p1 <+> text "+" <+> pretty p2)
-  pretty (PProd p1 p2) = parens (pretty p1 <+> text "*" <+> pretty p2)
+  -- pretty (PUnit )      = text "()"
+  pretty (PBase v)      = pretty v
+  -- pretty (PPid v)      = text "pid" <+> pretty v
+  pretty (PSum t p1 p2) = parens (pretty t <+> text "?" <+> pretty p1 <+> text "+" <+> pretty p2)
+  pretty (PProd t p1 p2)  = parens (pretty t <+> text "@" <+> pretty p1 <+> text "*" <+> pretty p2)
 
 instance Pretty Type where
   pretty TUnit     = text "()"

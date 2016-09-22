@@ -206,6 +206,7 @@ data AbsVal t where
   AUnit      :: Maybe (Expr ()) -> AbsVal ()
   AInt       :: Maybe (Expr Int) -> Maybe Int -> AbsVal Int
   AString    :: Maybe (Expr String) -> AbsVal String
+  ANonDet    :: Maybe (Expr a) -> AbsVal a -> AbsVal a -> AbsVal a
   ASum       :: Maybe (Expr (a :+: b)) -> Maybe (AbsVal a) -> Maybe (AbsVal b) -> AbsVal (a :+: b)
   AProd      :: Maybe (Expr (a,b)) -> AbsVal a -> AbsVal b -> AbsVal (a, b)
   ALift      :: Maybe (Expr (T n a)) -> String -> AbsVal a -> AbsVal (T (n::Symbol) a)
@@ -409,6 +410,10 @@ varToILSet :: Var a -> IL.Set
 varToILSet v
   = let IL.V s = varToIL v in IL.S s
 
+varToILSetParam :: Var a -> IL.Set
+varToILSetParam v
+  = IL.SIntParam (varToIL v)
+
 varToILSetVar :: Var a -> IL.Set
 varToILSetVar v
   = IL.SV (varToIL v)
@@ -524,7 +529,7 @@ recvToIL :: (?callStack :: CallStack)
          => (Typeable a) => AbsVal a -> Var a -> SymbExM (IL.Stmt ())
 recvToIL m x = do
   let t   = absToType m
-  return (IL.Recv (t, varToIL x) ())
+  return (IL.Recv (t, extractPattern m) ())
 --   case IL.lookupType g t of
 --     Just i  -> return $ nonDetRecvs i g cs
 --     Nothing -> do i <- freshTId
@@ -547,20 +552,6 @@ skip = IL.Skip ()
 assign :: Var a -> IL.ILExpr -> IL.Stmt ()
 assign v e
   = IL.Assign (varToIL v) e ()
--------------------------------------------------
--- | Sequence Statements
--------------------------------------------------
-seqStmt :: IL.Stmt () -> IL.Stmt () -> IL.Stmt ()
-
-seqStmt (IL.Skip _) s = s
-seqStmt s (IL.Skip _) = s
-
-seqStmt (IL.Block ss _) (IL.Block ss' _) = IL.Block (ss ++ ss') ()
-
-seqStmt s (IL.Block ss _) = IL.Block (s : ss) ()
-seqStmt (IL.Block ss _) s = IL.Block (ss ++ [s]) ()
-
-seqStmt s1 s2 = IL.Block [s1, s2] ()
 
 -------------------------------------------------
 -- | Updates to roles
@@ -834,7 +825,7 @@ symBind mm mf
   = SE $ do AProc _ st a  <- runSE mm
             AArrow _ f <- runSE mf
             AProc _ st' b <- runSE $ f a
-            return $ AProc Nothing (st `seqStmt` st') b
+            return $ AProc Nothing (st `IL.seqStmt` st') b
 
 -------------------------------------------------
 symForever :: (?callStack :: CallStack)
@@ -845,7 +836,7 @@ symForever p
             let v  = IL.LV $ "endL" ++ show n
                 sv = IL.Goto v ()
             AProc b s r <- prohibitSpawn (runSE p)
-            return $ AProc b (IL.Loop v (s `seqStmt` sv) ()) r
+            return $ AProc b (IL.Loop v (s `IL.seqStmt` sv) ()) r
 
 -------------------------------------------------
 symFixM :: (?callStack :: CallStack)
@@ -897,13 +888,13 @@ symDoN s n f
             AProc _ s _ <- runSE (g (AInt (Just (EVar v)) Nothing))
             return $ AProc Nothing (iter v x nv s) (error "TBD: symDoN")
     where
-      incrVar v = (`seqStmt` incr v)
+      incrVar v = (`IL.seqStmt` incr v)
       iter v _ (Just n) s = IL.Iter (varToIL v) (IL.SInts n) (incrVar v s) ()
-      iter v (Just (EVar x)) _ s = IL.Iter (varToIL v) (varToILSet x) (incrVar v s) ()
+      iter v (Just (EVar x)) _ s = IL.Iter (varToIL v) (varToILSetParam x) (incrVar v s) ()
       iter (V x) _ _ s    =
                   let v = IL.LV $ "L" ++ show x
                       sv = IL.Goto v  ()
-                  in IL.Loop v ((s `seqStmt` sv) `joinStmt` skip) ()
+                  in IL.Loop v ((s `IL.seqStmt` sv) `joinStmt` skip) ()
 
 incr x = IL.Assign (varToIL x) (IL.EPlus (IL.EVar (varToIL x)) (IL.EInt 1)) ()
 
@@ -937,7 +928,7 @@ symDoMany s p f
                 AProc _ s _  <- runSE (g (APidElem (Just (EVar x)) (Just v) (Pid Nothing)))
                 return $ AProc Nothing (iterVar v x s) (error "TBD: symDoMany")
     where
-      incrVar v = (`seqStmt` incr v)
+      incrVar v = (`IL.seqStmt` incr v)
       iter v r s    = IL.Iter (varToIL v)
                               (roleToSet r)
                               (incrVar v s) ()
@@ -972,6 +963,16 @@ symRecv
 
 freshVal :: ArbPat SymbEx a => SymbExM (AbsVal a)
 freshVal = runSE arb >>= fresh
+
+extractPattern :: AbsVal a -> IL.Pat           
+extractPattern (ASum (Just (EVar t)) (Just v1) (Just v2))
+  = IL.PSum (varToIL t) (extractPattern v1) (extractPattern v2)
+extractPattern (AProd (Just (EVar t)) v1 v2)
+  = IL.PProd (varToIL t) (extractPattern v1) (extractPattern v2)
+extractPattern v
+  = case getVar v of
+      Just (EVar x) -> IL.PBase (varToIL x)
+
 
 -------------------------------------------------
 symSend :: (?callStack :: CallStack, Typeable a)
@@ -1091,6 +1092,26 @@ symProj2 p = SE $ do p' <- runSE p
                          return (setExpr (EProj2 e) b)
                        AProd _ _ b -> return b
 
+symNondetVal :: SymbEx a -> SymbEx a -> SymbEx (Process SymbEx a)
+symNondetVal a b = SE $ do av <- runSE a
+                           bv <- runSE b
+                           v  <- freshVar
+                           let val = setVar v av  -- hack
+                           return $ AProc Nothing (nondet (varToIL v) av bv) val
+  where
+    nondet x v w =
+      let [vv] = absToIL v
+          [ww] = absToIL w
+      in
+      IL.Case { IL.caseVar   = IL.V "nondet"
+              , IL.caseLPat  = x
+              , IL.caseRPat  = x
+              , IL.caseLeft  = IL.Assign x vv ()
+              , IL.caseRight = IL.Assign x ww ()
+              , IL.annot = ()
+              } 
+                   
+
 -------------------------------------------------
 -- Instances
 -------------------------------------------------
@@ -1101,6 +1122,7 @@ instance Symantics SymbEx where
   int       = symInt
   str       = symStr
   bool      = symBool
+  nondetVal = symNondetVal
 
   -- Base Type Operations            
   plus      = symPlus
