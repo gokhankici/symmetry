@@ -140,9 +140,10 @@ runVerifier opt outd
  | optVerify opt =
     runLiquid (optVerbose opt) (outd </> "SymVerify.hs") outd
  | optRewrite opt =
-     let cmd = "sicstus --noinfo --nologo --goal \"main,halt.\" -l symverify.pl" :: String
-     in runCmd True "Testing rewrite..." outd $
-          shell $ printf "echo '$> %s'; %s" cmd cmd
+     return True
+     -- let cmd = "sicstus --noinfo --nologo --goal \"main,halt.\" -l symverify.pl" :: String
+     -- in runCmd True "Testing rewrite..." outd $
+     --      shell $ printf "echo '$> %s'; %s" cmd cmd
  | otherwise = return True
   
 

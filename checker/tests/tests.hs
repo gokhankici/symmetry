@@ -32,6 +32,15 @@ quickCheckTests
      testGroup "pos" <$> dirTests "checker/tests/pos" [] ExitSuccess
     ]
 
+data TestFile = TestFile { fileName         :: FilePath
+                         , prologEquivalent :: String
+                         , benchmarkName    :: String   }
+
+testFiles = [ TestFile "Ping00.hs" "simple ping" ""
+            , TestFile "Ping01.hs" "send first" ""
+            , TestFile "" "simple ping loop" ""
+            ]
+
 ---------------------------------------------------------------------------
 -- Nicked from LH:
 ---------------------------------------------------------------------------
@@ -41,8 +50,8 @@ group n xs = testGroup n <$> sequence xs
 dirTests :: FilePath -> [FilePath] -> ExitCode -> IO [TestTree]
 ---------------------------------------------------------------------------
 dirTests root ignored code
-  = do files    <- walkDirectory root
-       let tests = [ rel | f <- files, isTest f, let rel = makeRelative root f, rel `notElem` ignored ]
+  = do let files = fileName <$> testFiles --walkDirectory root
+           tests = [ rel | f <- files, isTest f, let rel = makeRelative root f, rel `notElem` ignored ]
        return    $ mkTest code root <$> tests
 
 ---------------------------------------------------------------------------
@@ -54,7 +63,8 @@ mkTest code dir file
       c          <- waitForProcess ph
       assertEqual "Wrong exit code" code c
   where
-    cmd = printf "cd %s && runghc %s --qc --verify --qc-samples 25" dir file
+    -- cmd = printf "cd %s && runghc %s --qc --verify --qc-samples 25" dir file
+    cmd = printf "cd %s && stack runghc %s -- --rewrite" dir file
 
 binPath pkgName = do
   testPath <- getExecutablePath
