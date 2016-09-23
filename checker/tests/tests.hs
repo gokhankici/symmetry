@@ -34,13 +34,16 @@ quickCheckTests
 
 data TestFile = TestFile { benchmarkName    :: String
                          , prologEquivalent :: String
-                         , fileName         :: FilePath }
+                         , testFileName         :: FilePath }
 
 testFiles = [ TestFile "" "simple ping" "Ping00.hs"
             , TestFile "" "send first" "Ping01.hs"
             , TestFile "Ping-Determined" "simple ping loop" "PingMulti02.hs"
             , TestFile "Ping-Race" "reverse ping" "PingRace00.hs"
             , TestFile "Ping-Classic" "two loops" "PingMulti00.hs"
+            , TestFile "" "double ping" "PingMulti03.hs"
+            , TestFile "" "nondet" "NonDet.hs"
+            , TestFile "" "iter-simple" "PingLoopBounded.hs"
             ]
 
 ---------------------------------------------------------------------------
@@ -52,7 +55,7 @@ group n xs = testGroup n <$> sequence xs
 dirTests :: FilePath -> [FilePath] -> ExitCode -> IO [TestTree]
 ---------------------------------------------------------------------------
 dirTests root ignored code
-  = do let files = fileName <$> testFiles --walkDirectory root
+  = do let files = testFileName <$> testFiles --walkDirectory root
            tests = [ rel | f <- files, isTest f, let rel = makeRelative root f, rel `notElem` ignored ]
        return    $ mkTest code root <$> tests
 

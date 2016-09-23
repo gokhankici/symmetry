@@ -1,30 +1,30 @@
 * Benchmarks
 
-| Name            | Prolog Name                | HS File     | Result |
-|-----------------+----------------------------+-------------+--------|
-|                 | single ping                | Ping00      | ✓      |
-|                 | send first                 | Ping01      | ✓      |
-| Ping-Determined | simple ping loop           | PingMulti02 |        |
-| Ping-Race       | reverse ping               | PingRace00  |        |
-|                 | two loops                  |             |        |
-| Ping-Classic    | two loops var              | PingMulti00 |        |
-|                 | double ping                | PingMulti03 |        |
-|                 | nondet                     | ? NonDet    |        |
-|                 | iter-simple                |             |        |
-|                 | work-stealing 2nd-phase    |             |        |
-|                 | work-stealing              |             |        |
-|                 | two-party ping             |             |        |
-|                 | interleaved two-party ping |             |        |
-|                 | simple pair                |             |        |
-|                 | simple receive-from        |             |        |
-|                 | simple ite                 |             |        |
-|                 | simple for-while           |             |        |
-|                 | simple_while_in_proc       |             |        |
-|                 | map-reduce                 |             |        |
-|                 | concdb                     |             |        |
-|                 | firewall                   |             |        |
-|                 | registry                   |             |        |
-|                 | lock-server                |             |        |
+| Name            | Prolog Name                | HS File            | Result |
+|-----------------+----------------------------+--------------------+--------|
+|                 | single ping                | Ping00.hs          | ✓      |
+|                 | send first                 | Ping01.hs          | ✓      |
+| Ping-Determined | simple ping loop           | PingMulti02.hs     |        |
+| Ping-Race       | reverse ping               | PingRace00.hs      |        |
+|                 | two loops                  |                    |        |
+| Ping-Classic    | two loops var              | PingMulti00.hs     |        |
+|                 | double ping                | PingMulti03.hs     |        |
+|                 | nondet                     | NonDet.hs ?        |        |
+|                 | iter-simple                | PingLoopBounded.hs |        |
+|                 | work-stealing 2nd-phase    |                    |        |
+|                 | work-stealing              |                    |        |
+|                 | two-party ping             |                    |        |
+|                 | interleaved two-party ping |                    |        |
+|                 | simple pair                |                    |        |
+|                 | simple receive-from        |                    |        |
+|                 | simple ite                 |                    |        |
+|                 | simple for-while           |                    |        |
+|                 | simple_while_in_proc       |                    |        |
+|                 | map-reduce                 |                    |        |
+|                 | concdb                     |                    |        |
+|                 | firewall                   |                    |        |
+|                 | registry                   |                    |        |
+|                 | lock-server                |                    |        |
 
 
 * Old notes
