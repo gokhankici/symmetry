@@ -6,10 +6,10 @@
 |                 | send first                 | Ping01      | ✓      |
 | Ping-Determined | simple ping loop           | PingMulti02 |        |
 | Ping-Race       | reverse ping               | PingRace00  |        |
-| Ping-Classic    | two loops                  |             |        |
-|                 | two loops var              |             |        |
-|                 | double ping                |             |        |
-|                 | nondet                     |             |        |
+|                 | two loops                  |             |        |
+| Ping-Classic    | two loops var              | PingMulti00 |        |
+|                 | double ping                | PingMulti03 |        |
+|                 | nondet                     | ? NonDet    |        |
 |                 | iter-simple                |             |        |
 |                 | work-stealing 2nd-phase    |             |        |
 |                 | work-stealing              |             |        |

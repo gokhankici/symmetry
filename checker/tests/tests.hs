@@ -32,13 +32,15 @@ quickCheckTests
      testGroup "pos" <$> dirTests "checker/tests/pos" [] ExitSuccess
     ]
 
-data TestFile = TestFile { fileName         :: FilePath
+data TestFile = TestFile { benchmarkName    :: String
                          , prologEquivalent :: String
-                         , benchmarkName    :: String   }
+                         , fileName         :: FilePath }
 
-testFiles = [ TestFile "Ping00.hs" "simple ping" ""
-            , TestFile "Ping01.hs" "send first" ""
-            , TestFile "" "simple ping loop" ""
+testFiles = [ TestFile "" "simple ping" "Ping00.hs"
+            , TestFile "" "send first" "Ping01.hs"
+            , TestFile "Ping-Determined" "simple ping loop" "PingMulti02.hs"
+            , TestFile "Ping-Race" "reverse ping" "PingRace00.hs"
+            , TestFile "Ping-Classic" "two loops" "PingMulti00.hs"
             ]
 
 ---------------------------------------------------------------------------
@@ -68,7 +70,7 @@ mkTest code dir file
 
 binPath pkgName = do
   testPath <- getExecutablePath
-  return    $ (takeDirectory $ takeDirectory testPath) </> pkgName </> pkgName             
+  return    $ (takeDirectory $ takeDirectory testPath) </> pkgName </> pkgName
 
 isTest   :: FilePath -> Bool
 isTest f =  takeExtension f == ".hs"
