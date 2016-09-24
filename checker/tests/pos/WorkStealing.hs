@@ -1,4 +1,3 @@
-{-# LANGUAGE DataKinds #-}
 {-# Language RebindableSyntax #-}
 {-# Language TypeOperators #-}
 {-# Language FlexibleContexts #-}
@@ -15,50 +14,63 @@ import Symmetry.Language
 import Symmetry.Verify
 import SrcHelper
 
-type HW  = T "HasWork" Boolean
-liftHW :: (DSL repr) => repr Boolean -> repr HW
-liftHW =  lift (TyName :: TyName "HasWork")
+-- Signal : Either Int or () as termination signal
+type SigT  = Int :+: ()
 
-type MP = T "MasterPid" (Pid RSing)
-liftMP :: (DSL repr) => repr (Pid RSing) -> repr MP
-liftMP =  lift (TyName :: TyName "MasterPid")
+mkWork :: DSL repr => repr Int -> repr SigT
+mkWork = inl
 
-type WP = T "WorkerPid" (Pid RSing)
-liftWP :: (DSL repr) => repr (Pid RSing) -> repr WP
-liftWP =  lift (TyName :: TyName "WorkerPid")
+mkTerm :: DSL repr => repr SigT
+mkTerm = inr tt
 
-workerProcess :: (DSL repr) => repr (Pid RSing -> Process repr ())
-workerProcess = lam $ \masterPid ->
-  let -- fix_f :: repr ((() -> Process repr ()) -> () -> Process repr ())
-      fix_f = lam $ \f -> lam $ \_ ->
-                do myPid <- self
-                   send masterPid (liftWP myPid)
-                   (hw :: repr HW) <- recv
-                   match (forget hw)
-                     (lam $ \_ -> app f tt)
-                     (lam $ \_ -> ret tt)
-  in do app (fixM fix_f) tt
-        ret tt
+
+mapperProcess :: (DSL repr) => repr (Pid RSing -> Pid RSing -> Process repr ())
+mapperProcess =  lam $ \masterPid -> lam $ \workQueuePid -> app (fixM (app (app fix_f masterPid) workQueuePid)) tt
+           where fix_f = lam $ \mPid -> lam $ \wqPid -> lam $ \f -> lam $ \_->   
+                       do myPid <- self
+                          send wqPid myPid
+                          (v :: repr SigT)  <- recv
+                          match v 
+                            (lam $ \val  ->  do -- send mPid val 
+                                                app f tt)
+                            (lam $ \_    -> ret tt)
+
 
 workQueueProcess :: (DSL repr) => repr (Int -> Pid RMulti -> Process repr ())
-workQueueProcess = lam $ \k -> lam $ \ps -> 
-  do doN "wq0" k $ lam $ \x ->
-       do (workerPid :: repr WP) <- recv
-          send (forget workerPid) (liftHW (inl tt)) -- send true
-     doMany "wq1" ps $ lam $ \_ ->
-       do (workerPid :: repr WP) <- recv
-          send (forget workerPid) (liftHW (inr tt)) -- send false
+workQueueProcess = lam $ \n -> lam $ \ps -> 
+  do doN "wq0" n allotWork
+     doMany "wq1" ps $ lam $ \_ -> do mapperPid <- recv
+                                      send mapperPid mkTerm
      return tt
+  where
+    allotWork
+      = lam $ \x -> do mapperPid <- recv
+                       send mapperPid (mkWork x)
 
-master :: (DSL repr) => repr (Int -> Int -> Process repr ())
-master = lam $ \n -> -- worker count
-         lam $ \k -> -- job count
-  do workerR   <- newRMulti -- workers
-     masterPid <- self
-     workers   <- spawnMany workerR n (app workerProcess masterPid)
-     app2 workQueueProcess k workers
-     ret tt
+masterProc :: DSL repr => repr (Int -> Process repr ())
+-- masterProc = lam $ \n -> do doN "l1" n (lam $ \_ -> do (x :: repr Int) <- recv
+--                                                        ret x)
+--                             ret tt
+masterProc = lam $ \n -> ret tt
+
+master :: (DSL repr) => repr (RMulti -> Int -> Int -> Process repr ())
+master = lam $ \mapperRole  -> lam $ \k -> lam $ \n ->
+               do myPid <- self
+                  masterRole <- newRSing
+                  masterPid     <- spawn masterRole (app masterProc n)
+                  mappers       <- spawnMany mapperRole k (app (app mapperProcess masterPid) myPid)
+                  app (app workQueueProcess n) mappers
+                  -- workQueuePid  <- spawn workQueueRole (app (app workQueueProcess n) mappers)
+      
+                  -- doN "l1" n (lam $ \p -> do recv)
+                  -- ret tt
+
+
+mainProc :: (DSL repr) => repr (Int -> Int -> ())
+mainProc = lam $ \k -> lam $ \n -> exec $ do r <- newRMulti
+                                             app (app (app master r) k) n
+                                             ret tt
 
 
 main :: IO ()
-main = checkerMain $ exec (app2 master arb arb)
+main = checkerMain (app (app mainProc arb) arb)

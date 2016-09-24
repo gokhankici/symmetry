@@ -102,11 +102,10 @@ mkRight x = pair_rule [PLTerm "1", x]
 
 -- Glue between generated prolog code and rewrite terms
 prolog_main = PLRule "main" [] stmts
-  where stmts = PLAnd [con, rewq, rem, ind, {- crf, -} tmp, rew, prntHdr, prnt]
+  where stmts = PLAnd [con, rewq, rem, crf, rew, prntHdr, prnt]
         con   = consult_rule [PLTerm "rewrite"]
         rewq  = rewrite_query_rule [PLVar "T",PLVar "Rem", PLVar "Ind", PLVar "Name"]
         rem   = PLAsgn (PLVar "Rem") (skip_rule [])
-        ind   = PLAsgn (PLVar "Ind") (PLList [])
         tmp   = PLAsgn (PLVar "Race") (PLTerm "fail")
         crf   =
           format_result_rule [ catch_rule [ check_race_freedom_rule [PLVar "T" , PLNull]
@@ -239,6 +238,8 @@ instance ToPrologExpr Pid where
 
 instance ToPrologExpr ILExpr where
   toPrologExpr EUnit      = PLTerm "e_tt"
+  toPrologExpr (EInt i)   = toPrologExpr i
+  toPrologExpr EString    = mkQuery "e_str" 1 [PLNull]
   toPrologExpr (EVar x)   = toPrologExpr x
   toPrologExpr (EPid p)   = toPrologExpr p
   -- toPrologExpr (EVar x)   = e_var_rule   [toPrologExpr x]
@@ -256,7 +257,7 @@ prologRecv (_, p)
   = toPrologExpr p
 
 instance ToPrologExpr Pat where    
-  toPrologExpr (PSum t (PProd x _ _) (PProd y _ _))
+  toPrologExpr (PSum t x@(PProd _ _ _) (PProd _ _ _))
     = pair_rule [toPrologExpr t, toPrologExpr x]
   toPrologExpr (PSum t (PBase x) (PBase y))
     = pair_rule [toPrologExpr t, toPrologExpr x]
@@ -379,6 +380,15 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
                , mkQuery "nondet" 1 [PLNull]
                , toPrologExpr (p,s1)
                , toPrologExpr (p,s2)
+               ]
+                                                  
+  toPrologExpr (p, Choose { chooseVar = x
+                          , chooseSet = i
+                          , chooseBody = s
+                          })
+    = seq_rule [ PLList [ nondet_rule [toPrologExpr x, toPrologExpr i]
+                        , toPrologExpr (p, s)
+                        ]
                ]
 
   toPrologExpr p  = unhandled p
