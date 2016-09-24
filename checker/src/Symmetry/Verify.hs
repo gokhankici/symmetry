@@ -12,6 +12,7 @@ import Symmetry.IL.Rewrite.Prolog
 -- import Symmetry.IL.Inst
 -- import Symmetry.IL.TrailParser
 
+import Data.List
 import System.Console.ANSI
 import Paths_checker
 import Control.Exception
@@ -141,7 +142,9 @@ runVerifier opt outd
     runLiquid (optVerbose opt) (outd </> "SymVerify.hs") outd
  | optRewrite opt =
      return True
-     -- let cmd = "sicstus --noinfo --nologo --goal \"main,halt.\" -l symverify.pl" :: String
+     -- let cmd1 = "spld --static $(find . -name '*\\.pl') &>/dev/null"
+     --     cmd2 = "sicstus --noinfo --nologo --goal \"main,halt.\" -l symverify.pl"
+     --     cmd  = concat $ intersperse " && " [cmd1, cmd2] :: String
      -- in runCmd True "Testing rewrite..." outd $
      --      shell $ printf "echo '$> %s'; %s" cmd cmd
  | otherwise = return True

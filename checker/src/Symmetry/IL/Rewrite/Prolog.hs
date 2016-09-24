@@ -128,6 +128,8 @@ prolog_main = PLRule "main" [] stmts
           format_rule [ PLString "~p:~t~30|~p~t~21+~p~n"
                       , PLList [PLVar "Name", PLVar "Rewrite", PLVar "Race"] ]
 
+prolog_entry = PLRule "user:runtime_entry" [PLTerm "start"] (PLTerm "main")
+
 printProlog :: (Data a, P.Pretty a) => Config a -> String
 printProlog ci
   = render $ vcat [ protocol
@@ -136,7 +138,10 @@ printProlog ci
   where
     prolog = vcat [ encodeProlog $ rewrite ci
                   , space
-                  , encodeProlog prolog_main ]
+                  , encodeProlog prolog_main
+                  , space
+                  , encodeProlog prolog_entry
+                  ]
     protocol =
       vcat [ text "%%" <+> text l | l <- lines (show (P.pretty ci))]
 
@@ -191,6 +196,10 @@ tupled xs
 list :: [Doc] -> Doc
 list xs
   = brackets (hcat (punctuate (text ",") xs))
+
+arglist   :: [Doc] -> Doc
+arglist [] = brackets empty
+arglist xs = lbrack <> (vcat $ punctuate (char ',') xs) <> rbrack
 
 unhandled :: P.Pretty a => a -> PrologExpr
 unhandled x = trace str (PLComment True [str])
@@ -476,7 +485,8 @@ instance Prolog PrologExpr where
                _  -> tupled (encodeProlog <$> pQueryArgs)
 
   encodeProlog (PLList {..})
-    = list (encodeProlog <$> pStmts)
+    -- = list (encodeProlog <$> pStmts)
+    = arglist (encodeProlog <$> pStmts)
   encodeProlog (PLAnd {..})
     = vcat $ punctuate comma (encodeProlog <$> pStmts)
   encodeProlog (PLOr {..})
