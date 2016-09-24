@@ -35,8 +35,8 @@ workerProcess = lam $ \masterPid ->
                    send masterPid (liftWP myPid)
                    (hw :: repr HW) <- recv
                    match (forget hw)
-                     (lam $ \_ -> ret tt)
                      (lam $ \_ -> app f tt)
+                     (lam $ \_ -> ret tt)
   in do app (fixM fix_f) tt
         ret tt
 
