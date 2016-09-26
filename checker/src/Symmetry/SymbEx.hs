@@ -183,11 +183,10 @@ fresh (AUnit _)    = AUnit . Just . EVar <$> freshVar
 fresh (AInt _ n)   = (\v -> return (AInt (Just (EVar v)) n))  =<< freshVar
 fresh (AString _)  = AString . Just . EVar <$> freshVar
 fresh (ASum _ l r) = do v  <- Just . EVar <$> freshVar
-                        V x  <- freshVar
-                        n <- gets varCtr
-                        fl <- mapM ((setVar (V x) <$>) . fresh) l
+                        n  <- gets varCtr
+                        fl <- mapM fresh l
                         modify $ \s -> s { varCtr = n }
-                        fr <- mapM ((setVar (V x) <$>) . fresh) r
+                        fr <- mapM fresh r
                         return $ ASum v fl fr
 fresh (AProd _ l r) = do v  <- Just . EVar <$> freshVar
                          fl <- fresh l
@@ -453,8 +452,8 @@ absToIL (ARoleSing _ _)  = error "TBD: absToIL ARoleSing"
 absToIL (ARoleMulti _ _)  = error "TBD: absToIL ARoleMulti"
 
 absToIL (AUnit _)            = [IL.EUnit]
-absToIL (AInt (Just e) _)    = [absExpToIL e]
 absToIL (AInt  _ (Just i))   = [IL.EInt i]
+absToIL (AInt (Just e) _)    = [absExpToIL e]
 absToIL (AString _)          = [IL.EString]
 -- absToIL (ALift (Just e) _ _) = [absExpToIL e]
 absToIL (ALift _ t v)        = absToIL v
@@ -534,11 +533,19 @@ choosePid p s
   = return (s (absPidToExp p))
           
 
-recvToIL :: (?callStack :: CallStack)
-         => (Typeable a) => AbsVal a -> Var a -> SymbExM (IL.Stmt ())
-recvToIL m x = do
-  let t   = absToType m
-  return (IL.Recv (t, extractPattern m) ())
+recvToIL :: (?callStack :: CallStack, Typeable a)
+         => AbsVal a
+         -> Maybe (AbsVal (Pid RSing))
+         -> Var a
+         -> SymbExM (IL.Stmt ())
+recvToIL m mp x = do
+  let t    = absToType m
+      from = absToIL <$> mp
+  return $ mkRecv t from
+  where
+    mkRecv t (Just [e]) = IL.Recv (t, extractPattern m) (Just e) ()
+    mkRecv t (Just es)  = IL.NonDet (mkRecv t . Just . return <$> es) ()
+    mkRecv t _          = IL.Recv (t, extractPattern m) Nothing ()
 --   case IL.lookupType g t of
 --     Just i  -> return $ nonDetRecvs i g cs
 --     Nothing -> do i <- freshTId
@@ -841,14 +848,22 @@ symBind mm mf
 
 -------------------------------------------------
 symForever :: (?callStack :: CallStack)
-           => SymbEx (Process SymbEx ()) -> SymbEx (Process SymbEx ())
+           => SymbEx (a -> Process SymbEx a)
+           -> SymbEx a
+           -> SymbEx (Process SymbEx a)
 -------------------------------------------------
-symForever p
-  = SE $ do n <- freshLoopNum
-            let v  = IL.LV $ "endL" ++ show n
-                sv = IL.Goto v ()
-            AProc b s r <- prohibitSpawn (runSE p)
-            return $ AProc b (IL.Loop v (s `IL.seqStmt` sv) ()) r
+-- symForever f
+--   = SE $ do n <- freshLoopNum
+--             let v  = IL.LV $ "endL" ++ show n
+--                 sv = IL.Goto v ()
+--             AProc b s r <- prohibitSpawn (runSE p)
+--             return $ AProc b (IL.Loop v True (s `IL.seqStmt` sv) ()) r
+symForever f x = SE $ do fv <- runSE f
+                         let f' = SE. return . AArrow Nothing $ \_ -> SE $ return fv
+                             fp = symFixM f'
+                         AProc b (IL.Loop v _ s a) r <- runSE (app fp x)
+                         return (AProc b (IL.Loop v True s a) r)
+    
 
 -------------------------------------------------
 symFixM :: (?callStack :: CallStack)
@@ -863,7 +878,7 @@ symFixM f
                       g = SE . return . AArrow Nothing $ \a -> SE $ return (AProc Nothing sv a)
                   AArrow _ h  <- runSE (app f g)
                   AProc b s r <- prohibitSpawn $ runSE (h a)
-                  return $ AProc b (IL.Loop v s ()) r
+                  return $ AProc b (IL.Loop v False s ()) r
 
 prohibitSpawn m
   = do env <- gets renv
@@ -906,7 +921,7 @@ symDoN s n f
       iter (V x) _ _ s    =
                   let v = IL.LV $ "L" ++ show x
                       sv = IL.Goto v  ()
-                  in IL.Loop v ((s `IL.seqStmt` sv) `joinStmt` skip) ()
+                  in IL.Loop v False ((s `IL.seqStmt` sv) `joinStmt` skip) ()
 
 incr x = IL.Assign (varToIL x) (IL.EPlus (IL.EVar (varToIL x)) (IL.EInt 1)) ()
 
@@ -967,12 +982,19 @@ symExec p
 symRecv :: (?callStack :: CallStack, Typeable a, ArbPat SymbEx a)
         => SymbEx (Process SymbEx a)
 -------------------------------------------------
-symRecv
-  = SE $ do v     <- freshVal
-            x     <- freshVar
-            let val = setVar x v
-            s     <- recvToIL val x
-            return $ AProc Nothing s val
+symRecv = SE $ symDoRecv Nothing
+
+symRecvFrom p = SE $ do pv <- runSE p
+                        symDoRecv (Just pv)
+
+symDoRecv :: (?callStack :: CallStack, Typeable a, ArbPat SymbEx a)
+          => Maybe (AbsVal (Pid RSing)) -> SymbExM (AbsVal (Process SymbEx a))
+symDoRecv mp
+  = do v <- freshVal
+       s <- recvToIL v mp (extr (getVar v))
+       return $ AProc Nothing s v
+    where
+      extr (Just (EVar x)) = x
 
 freshVal :: ArbPat SymbEx a => SymbExM (AbsVal a)
 freshVal = runSE arb >>= fresh
@@ -1128,7 +1150,7 @@ symNondetVal :: SymbEx a -> SymbEx a -> SymbEx (Process SymbEx a)
 symNondetVal a b = SE $ do av <- runSE a
                            bv <- runSE b
                            v  <- freshVar
-                           let val = setVar v av  -- hack
+                           let val = setVar v (av `join` bv)  -- hack
                            return $ AProc Nothing (nondet (varToIL v) av bv) val
   where
     nondet x v w =
@@ -1195,8 +1217,9 @@ instance Symantics SymbEx where
   proj1 = symProj1
   proj2 = symProj2
 
-  recv = symRecv
-  send = symSend
+  recv     = symRecv
+  recvFrom = symRecvFrom
+  send     = symSend
 
   match = symMatch
   matchList = symMatchList

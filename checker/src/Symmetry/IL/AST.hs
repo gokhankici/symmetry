@@ -185,6 +185,7 @@ data Stmt a = Skip { annot :: a }
                     }
 
             | Recv  { rcvMsg :: (Type, Pat)
+                    , rcvFrm :: Maybe ILExpr
                     , annot  :: a
                     }
 
@@ -194,9 +195,10 @@ data Stmt a = Skip { annot :: a }
                    , annot    :: a
                    }
 
-            | Loop { loopVar  :: LVar
-                   , loopBody :: Stmt a
-                   , annot    :: a
+            | Loop { loopVar     :: LVar
+                   , loopForever :: Bool
+                   , loopBody    :: Stmt a
+                   , annot       :: a
                    }
 
             | Goto { varVar :: LVar
@@ -279,11 +281,11 @@ unboundVars s
     bound   = nub $ everything (++) (mkQ [] go) s
     absIdx  = nub $ everything (++) (mkQ [] goAbs) s
     go :: Data a => Stmt a -> [Var]
-    go (Recv (_,x) _) = vars x
-    go (i@Iter {})    = [iterVar i]
-    go (i@Choose {})  = [chooseVar i]
-    go (i@Case {})    = [caseLPat i, caseRPat i]
-    go _               = []
+    go (Recv (_,x) _ _) = vars x
+    go (i@Iter {})      = [iterVar i]
+    go (i@Choose {})    = [chooseVar i]
+    go (i@Case {})      = [caseLPat i, caseRPat i]
+    go _                = []
     goAbs :: Pid -> [Var]
     goAbs (PAbs v _) = [v]
     goAbs _          = []
@@ -298,7 +300,7 @@ unboundSets s
     isSetVar _           = False
     boundSetVars         = nub $ everything (++) (mkQ [] go) s
     go :: Data a => Stmt a -> [Set]
-    go (Recv (_, p) _)= [S x | V x <- vars p] -- TODO
+    go (Recv (_, p) _ _) = [S x | V x <- vars p] -- TODO
     go _                 = []
 
 endLabels :: (Data a, Typeable a) => Stmt a -> [LVar]
@@ -325,12 +327,12 @@ instance Traversable Stmt where
     = Skip <$> f a
   traverse f (Send p ms a)
     = Send p ms <$> f a
-  traverse f (Recv ms a)
-    = Recv ms <$> f a
+  traverse f (Recv ms x a)
+    = Recv ms x <$> f a
   traverse f (Iter v s ss a)
     = flip (Iter v s) <$> f a <*> traverse f ss
-  traverse f (Loop v ss a)
-    = flip (Loop v) <$> f a <*> traverse f ss
+  traverse f (Loop v b ss a)
+    = flip (Loop v b) <$> f a <*> traverse f ss
   traverse f (Choose v s ss a)
     = flip (Choose v s) <$> f a <*> traverse f ss
   traverse f (Goto v a)
@@ -368,11 +370,11 @@ lastStmts s@(Goto _ _)         = [s]
 lastStmts s@(Compare _ _ _ _)  = [s]
 lastStmts (Block ss _)         = [last ss]
 lastStmts s@(Send _ _ _)       = [s]
-lastStmts s@(Recv _ _)         = [s]
+lastStmts s@(Recv _ _ _)       = [s]
 lastStmts (NonDet ss _)        = concatMap lastStmts ss
 lastStmts (Choose _ _ s _)     = lastStmts s
 lastStmts s@(Iter _ _ _ _)     = [s]
-lastStmts (Loop _ s _)         = lastStmts s
+lastStmts (Loop _ _ s _)       = lastStmts s
 lastStmts (Case _ _ _ sl sr _) = lastStmts sl ++ lastStmts sr
 lastStmts s@(Die _)            = [s]
 lastStmts s@Assert{}           = [s]
@@ -417,7 +419,7 @@ nextStmts toMe s@(Iter _ _ t _)
     I.fromList [(ident j, [s]) | j <- lastStmts t]  `joinMaps`
     nextStmts (ident s) t
 
-nextStmts toMe me@(Loop v s _)
+nextStmts toMe me@(Loop v _ s _)
   = singleton toMe me `joinMaps`
     I.fromList [(j, [me]) | j <- js ] `joinMaps`
     nextStmts (ident me) s
@@ -495,6 +497,7 @@ instance Pretty MConstr where
 instance Pretty ILExpr where
   pretty EUnit     = text "()"
   pretty EString   = text "<str>"
+  pretty (EPred p) = pretty p
   pretty (EInt i)  = int i
   pretty (EVar v)  = pretty v
   pretty (EPid p)  = pretty p
@@ -556,8 +559,12 @@ instance Pretty a => Pretty (Stmt a) where
   pretty (Send p (t,e) a)
     = text "send" <+> pretty p <+> parens (pretty e <+> text "::" <+> pretty t) <+> pretty a
 
-  pretty (Recv (t,x) a)
+  pretty (Recv (t,x) Nothing a)
     = text "recv" <+> parens (pretty x <+> text "::" <+> pretty t) <+> pretty a
+
+  pretty (Recv (t,x) (Just e) a)
+    = text "recvFrom" <> parens (pretty e)
+      <+> parens (pretty x <+> text "::" <+> pretty t) <+> pretty a
 
   pretty (Iter x xs s a)
     = pretty x <+> text ":=" <+> int 0 $$
@@ -567,8 +574,10 @@ instance Pretty a => Pretty (Stmt a) where
   pretty (Goto (LV v) a)
     = text "goto" <+> pretty v <+> pretty a
 
-  pretty (Loop (LV v) s a)
+  pretty (Loop (LV v) False s a)
     = pretty v <> colon <+> parens (pretty s) <+> pretty a
+  pretty (Loop (LV v) True s a)
+    = text "forever" <> colon <+> parens (pretty s) <+> pretty a
 
   pretty (Case l pl pr sl sr a)
     = text "match" <+> pretty l <+> text "with"  <+> pretty a $$
@@ -625,8 +634,8 @@ recvVars s
   = everything (++) (mkQ [] go) s
   where
     go :: Stmt a -> [Var]
-    go (Recv t _) = listify (const True) t
-    go _           = []
+    go (Recv t _ _) = listify (const True) t
+    go _            = []
 
 patVars :: forall a. (Data a, Typeable a) => Stmt a -> [Var]
 patVars s

@@ -10,7 +10,10 @@
 			     ]
 	     ).
 
-:- use_module('tags.pl', [check_race_freedom/2]).
+:- use_module('tags.pl', [
+			  check_race_freedom/2,
+			  tags_independent/2
+			 ]).
 
 :- dynamic independent/2, /* independent(p,q): processes p and q are independent.*/
 	talkto/2,     /* talkto(p,q): p and q are communicating, all other procs are external. */
@@ -110,7 +113,7 @@ rewrite_step(T, Gamma, Delta, Rho, Psi, T1, Gamma1, Delta1, Rho1, Psi1) :-
 	  atomic(P),
 	  parse_pid_exp(X, P, Rho, Q),
 	  talkto(P, M),
-	  independent(Q, M) ->
+	  tags_independent(Q,M) ->
 	  T1=skip,
 	  Gamma1=Gamma,
 	  Delta1=Delta,
@@ -196,6 +199,20 @@ rewrite_step(T, Gamma, Delta, Rho, Psi, T1, Gamma1, Delta1, Rho1, Psi1) :-
 	  Gamma1=Gamma,
 	  Psi1=Psi
 	/*
+	while(p, cond, A): remove after one iteration --bit hacky
+	*/
+	; functor(T, while, 3),
+	  T= while(P, Cond, A),
+	  check_cond(Cond, P, Rho),
+	  rewrite(A, Gamma, Delta, Rho, Psi, skip, Gamma2, Delta2, Rho2, Psi),
+	  negate(Cond, NegCond),
+	  check_cond(NegCond, P, Rho2)->
+	  T1=skip,
+	  Gamma1=Gamma2,
+	  Delta1=Delta2,
+	  Rho1=Rho2,
+	  Psi1=Psi
+	/*
 	while(p, cond, A): remove while if cond doesn't hold.
 	*/
 	; functor(T, while, 3),
@@ -258,15 +275,9 @@ rewrite_step(T, Gamma, Delta, Rho, Psi, T1, Gamma1, Delta1, Rho1, Psi1) :-
 	      T1=skip, Gamma1=Gamma, Delta1=Delta, Rho1=Rho, Psi=Psi1
 	  ;   L = [A] ->
 	      T1=A, Gamma1=Gamma, Delta1=Delta, Rho1=Rho, Psi=Psi1
-	  /*
-	  rewrite single expression
-	  */
 	  ;   select(A, L, LR),
 	      (   A==skip->
 		  T1=par(LR), Gamma1=Gamma, Delta1=Delta, Rho1=Rho, Psi=Psi1
-	      ;   rewrite_step(A, Gamma, Delta, Rho, Psi, A1, Gamma1, Delta1, Rho1, Psi1)->
-		  select(A, L, A1, L1),
-		  T1=par(L1)
 	      )
 	  /*
 	  rewrite ordered pairs of expressions
@@ -378,11 +389,14 @@ rewrite_step(T, Gamma, Delta, Rho, Psi, T1, Gamma1, Delta1, Rho1, Psi1) :-
 	  copy_instantiate(B, P, Proc, B1),
 	  set_talkto(M, S),
 	  assert(symset(Proc, S)),
-	  mk_pair(A, B1, Pair),
-	  rewrite(Pair, Gamma, [], Rho2, Psi, par(skip, skip), Gamma, Delta2, Rho3, Psi2)->
+	  mk_pair(A, B1, Pair, Switched),
+	  rewrite(Pair, Gamma, [], Rho2, Psi, Pair1, Gamma, Delta2, Rho3, Psi2),
+	  unswitch_pair(Pair1, Switched, par(skip, B2)),
+          smaller_than(B2, B1) ->
 	  clear_talkto,
 	  retract(symset(Proc, S)),
-	  T1=par(TA, skip),
+          substitute_term(P, Proc, B2, B3),
+	  T1=par(TA, sym(P, S, B3)),
 	  replace_proc_id(S, Proc, Rho3, Rho1),
 	  Gamma1=Gamma,
 	  substitute_term(P, Proc, Delta2, Delta3),
@@ -435,11 +449,13 @@ rewrite_step(T, Gamma, Delta, Rho, Psi, T1, Gamma1, Delta1, Rho1, Psi1) :-
 	  TB=while(P, Cond, B),
 	  check_cond(Cond, P, Rho),
 	  empty_avl(Psi),
-          mk_pair(A, B, Pair),
-	  rewrite(Pair, Gamma, [], Rho, Psi, par(skip, skip), Gamma, Delta2, Rho1, Psi1) ->
-	  T1=par(skip, TB),
+          mk_pair(A, B, Pair, Switched),
+	  rewrite(Pair, Gamma, [], Rho, Psi, Pair1, Gamma, Delta2, Rho1, Psi1),
+          unswitch_pair(Pair1, Switched, par(A1, skip)),
+          smaller_than(A1, A) ->
+	  T1=par(A1, TB),
 	  append(Delta, [Delta2], Delta1),
-	  Gamma1=Gamma
+          Gamma1=Gamma
 	  /*
 	  par(A, B): rewrite ordered pairs.
 	  */
@@ -467,6 +483,14 @@ rewrite(T, Gamma, Delta, Rho, Psi, T2, Gamma2, Delta2, Rho2, Psi2) :-
 	;   format('Failed to rewrite term:~p~n' ,[T]), fail
 	).
 
+
+smaller_than(T, T1) :-
+	/* T is either a proper subterm of T1 or skip. */
+	(   T==skip
+	;   T1\==T,
+	    contains_term(T, T1)
+	).
+
 match(T, T1) :-
 	/*
 	Try to match T and T1 by permuting the elements of L in par(L).
@@ -481,9 +505,20 @@ match(T, T1) :-
 	).
 
 
+mk_pair(A, B, Pair, Switched) :-
+	(   Pair=par(A, B),
+	    Switched=false
+	;   Pair=par(B, A),
+	    Switched=true
+	).
+
 mk_pair(A, B, Pair) :-
-	(   Pair=par(A, B)
-	;   Pair=par(B, A)
+	mk_pair(A, B, Pair, _).
+
+unswitch_pair(par(A, B), Switched, Pair) :-
+	(   Switched->
+	    Pair=par(B, A)
+	;   Pair=par(A, B)
 	).
 
 sanity_check(L) :-

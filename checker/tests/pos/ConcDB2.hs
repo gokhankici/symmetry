@@ -10,18 +10,26 @@ import Symmetry.Language
 import Symmetry.Verify
 import Symmetry.SymbEx
 
-type Request  = T "Req" (Pid RSing :+: (Pid RSing :+: Value))
+
+type Req      = (Int, (Pid RSing, Value))
+type Request  = T "Req" Req
 type Response = T "Resp" (() :+: ())
 type Value    = Int
 
 mkAlloc :: DSL repr => repr (Pid RSing -> Request)
-mkAlloc = lam $ \p -> lift (TyName :: TyName "Req") (inl p)
+mkAlloc = lam $ \p -> lift (TyName :: TyName "Req") (pair (int 0) (pair p (int 0)))
 
-mkLookup :: DSL repr => repr (Pid RSing -> Request)
-mkLookup = lam $ \p -> lift (TyName :: TyName "Req") (inr (inl p))
+mkValue :: DSL repr => repr (Pid RSing -> Int -> Request)
+mkValue = lam $ \p -> lam $ \v ->
+          lift (TyName :: TyName "Req") (pair (int 1) (pair p v))
 
-mkValue :: DSL repr => repr (Int -> Request)
-mkValue = lam $ \p -> lift (TyName :: TyName "Req") (inr (inr p))
+mkRequest :: DSL repr => repr (Int -> Pid RSing -> Value -> Request)
+mkRequest = lam $ \c -> lam $ \p -> lam $ \v ->
+              lift (TyName :: TyName "Req") (pair c (pair p v))
+
+mkLookup :: DSL repr => repr (Pid RSing -> Value -> Request)
+mkLookup = lam $ \p -> lam $ \k ->
+           lift (TyName :: TyName "Req") (pair (int 2) (pair p k))
 
 mkFree :: DSL repr => repr Response
 mkFree = lift (TyName :: TyName "Resp") (inl tt)
@@ -29,40 +37,42 @@ mkFree = lift (TyName :: TyName "Resp") (inl tt)
 mkAllocd :: DSL repr => repr Response
 mkAllocd = lift (TyName :: TyName "Resp") (inr tt)
 
-client :: DSL repr => repr (Pid RSing -> Process repr ())
+client :: forall repr. DSL repr => repr (Pid RSing -> Process repr ())
 client
   = lam $ \db -> do me  <- self
-                    msg <- nondetVal (app mkAlloc me) (app mkLookup me)
+                    tag <- nondetVal (int 0) (int 1)
+                    let msg = mkRequest `app` tag `app` me `app` (int 3)
                     send db msg
-                    match (forget msg)
+                    match (tag `eq` int 0)
                       -- Did I alloc?
                       (lam $ \_ -> do resp :: repr Response <- recv
                                       let x = arb :: repr Int
                                       match (forget resp)
-                                        (lam $ \_ -> return tt {- send db x -}) -- value
+                                        (lam $ \_ -> send db x) -- value
                                         (lam $ \_ -> return tt))
                       -- Did I Lookup?
-                      (lam $ \_ -> do v :: repr Response <- recv
+                      (lam $ \_ -> do v :: repr Value <- recv
                                       return tt)
-database :: DSL repr => repr (Process repr ())
+database :: forall repr. DSL repr => repr (Process repr ())
 database
-  = app (fixM dbLoop) tt
+  = forever dbLoop tt
   where
-    dbLoop = lam $ \self -> lam $ \_ ->
+    dbLoop = lam $ \_ ->
                 do msg :: repr Request <- recv
-                   match (forget msg)
-                           (lam $ \p -> do let b = arb :: repr Boolean
-                                           match b
-                                             (lam $ \_ -> do send p mkFree
-                                                             -- v :: repr Value <- recv
-                                                             return tt)
-                                             (lam $ \_ -> do send p mkAllocd
-                                                             return tt))
-                           (lam $ \m' -> match m'
-                                           (lam $ \p -> do let v = arb :: repr Value
-                                                           send p v)
-                                           (lam $ \_ -> die))
-                   tt |> self
+                   let m = forget msg
+                       p = proj1 (proj2 m)
+                   match (proj1 m `eq` int 0)
+                           (lam $ \_ ->
+                              do let b = arb :: repr Boolean
+                                 match b
+                                  (lam $ \_ -> do send p mkFree
+                                                  v :: repr Value <- recvFrom p
+                                                  return tt)
+                                  (lam $ \_ -> do send p mkAllocd
+                                                  return tt))
+                           (lam $ \_ -> do let v = arb :: repr Value
+                                           send p v)
+                   return tt
 
 mainProc :: DSL repr => repr (Process repr ())
 mainProc = do rcs <- newRMulti

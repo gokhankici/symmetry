@@ -10,7 +10,7 @@ import           Symmetry.IL.AST hiding(($$))
 import           Paths_checker
 import           Text.PrettyPrint
 import qualified Text.PrettyPrint.Leijen as P hiding ((<$>))
-import           Data.Generics (everywhere, mkT, Data(..), Typeable(..))
+import           Data.Generics (everything, everywhere, mkQ, mkT, Data(..), Typeable(..))
 
 import Control.Exception
 import Data.Char
@@ -102,10 +102,9 @@ mkRight x = pair_rule [PLTerm "1", x]
 
 -- Glue between generated prolog code and rewrite terms
 prolog_main = PLRule "main" [] stmts
-  where stmts = PLAnd [con, rewq, rem, crf, rew, prntHdr, prnt]
+  where stmts = PLAnd [con, rewq, crf, rew, prntHdr, prnt]
         con   = consult_rule [PLTerm "rewrite"]
         rewq  = rewrite_query_rule [PLVar "T",PLVar "Rem", PLVar "Ind", PLVar "Name"]
-        rem   = PLAsgn (PLVar "Rem") (skip_rule [])
         tmp   = PLAsgn (PLVar "Race") (PLTerm "fail")
         crf   =
           format_result_rule [ catch_rule [ check_race_freedom_rule [PLVar "T" , PLNull]
@@ -147,13 +146,32 @@ printProlog ci
 rewrite :: (Data a, P.Pretty a) => Config a -> PrologStmt
 rewrite ci
   = PLRule "rewrite_query"
-           [PLVar "T", PLTerm "skip", PLList [], PLVar "Name"]
+           [PLVar "T", remTerm, PLList [], PLVar "Name"]
            $ PLAnd [ PLAsgn (PLVar "T") $ toPrologExpr ci
                    , PLAsgn (PLVar "Name") (PLTerm "verify") ]
+    where
+      remTerm = findRemainders ci
 
 -- -----------------------------------------------------------------------------
 -- Symmetry to PrologExpr
 -- -----------------------------------------------------------------------------
+
+-- -----------------------------------------------------------------------------
+-- Helper function to extract all loops that should 'stick around'
+-- -----------------------------------------------------------------------------
+findRemainders :: forall a. (P.Pretty a, Data a) => Config a -> PrologExpr
+findRemainders Config { cProcs = ps }
+  = remTerm $ concatMap extract ps
+  where
+    remTerm [] = skip_rule []
+    remTerm xs = par_rule [PLList xs]
+    extract :: (P.Pretty a, Data a) => Process a -> [PrologExpr]
+    extract (p,s) = case everything (++) (mkQ [] go) s of
+                      [loop] -> [toPrologExpr (p,loop)]
+                      _      -> []
+    go :: (P.Pretty a, Data a) => Stmt a -> [Stmt a]
+    go loop@Loop{ loopForever = True } = [loop]
+    go _                               = []
 
 -- -----------------------------------------------------------------------------
 -- Helper function to convert iters into fors for great rewrite justice
@@ -236,6 +254,12 @@ instance ToPrologExpr Pid where
   toPrologExpr p
     = unhandled p
 
+instance ToPrologExpr Pred where
+  toPrologExpr (ILBop o e1 e2)
+    = prologOp o (toPrologExpr e1) (toPrologExpr e2)
+    where
+      prologOp Eq x y = PLEq x y
+
 instance ToPrologExpr ILExpr where
   toPrologExpr EUnit      = PLTerm "e_tt"
   toPrologExpr (EInt i)   = toPrologExpr i
@@ -295,6 +319,13 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
       msg = toPrologExpr e
       to  = toPrologExprPid q
       ty  = toPrologExpr t
+  toPrologExpr (p, Recv{rcvMsg = (t,pat), rcvFrm = Just e })
+    = recv_ft_rule [who,whence,ty,var]
+    where
+      var    = prologRecv (t,pat)
+      who    = toPrologExpr p
+      ty     = ty_rule [toPrologExpr t]
+      whence = toPrologExprPid e
   toPrologExpr (p, Recv{rcvMsg = (t,pat)})
     = recv_t_rule [who,ty,var]
     where
@@ -338,28 +369,20 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
                   , PLTerm "1"
                   ]
 
-  toPrologExpr (p, Loop { loopVar  = x
-                        , loopBody = b
+  toPrologExpr (p, Loop { loopVar     = x
+                        , loopBody    = b
+                        , loopForever = f
                         })
-    = seq_rule [ PLList [ assign_rule [ toPrologExpr p
-                                      , toPrologExpr x
-                                      , PLTerm "1"
-                                      ]
-                        , while_rule [ toPrologExpr p
-                                     , cond
-                                     , body
-                                     ]
-                        ]
-               ]
+    | f          = while_rule [ pExp, cond, body ]
+    | otherwise  = seq_rule [ PLList [ setLoop "1" , while_rule [ pExp, cond, body ] ] ]
       where
-        cond  = PLEq (toPrologExpr x) (PLTerm "1")
-        body  = seq_rule [ PLList [ assign_rule [ toPrologExpr p
-                                                , toPrologExpr x
-                                                , PLTerm "0"
-                                                ]
-                                  , toPrologExpr (p, b)
-                                  ]
-                         ]
+        setLoop v        = assign_rule [ pExp, toPrologExpr x, PLTerm v ]
+        pExp             = toPrologExpr p
+        cond | f         = PLTerm "true"
+             | otherwise = PLEq (toPrologExpr x) (PLTerm "1")
+        body | f         = toPrologExpr (p, b)
+             | otherwise = seq_rule [ PLList [ setLoop "0", toPrologExpr (p, b) ] ]
+
   toPrologExpr (p, Case { caseVar = v
                         , caseLeft = l
                         , caseRight = r })
@@ -367,6 +390,13 @@ instance P.Pretty a => ToPrologExpr (Pid, Stmt a) where
                , PLEq (toPrologExpr v) (PLTerm "0")
                , toPrologExpr (p, l)
                , toPrologExpr (p, r)
+               ]
+
+  toPrologExpr (p, Assign { assignLhs = lhs, assignRhs = EPred rhs })
+    = ite_rule [ toPrologExpr p
+               , toPrologExpr rhs
+               , assign_rule [ toPrologExpr p, toPrologExpr lhs, PLTerm "0" ]
+               , assign_rule [ toPrologExpr p, toPrologExpr lhs, PLTerm "1" ]
                ]
 
   toPrologExpr (p, Assign { assignLhs = lhs, assignRhs = rhs })
