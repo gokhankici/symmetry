@@ -4,16 +4,16 @@
 |-----------------+----------------------------+--------------------+--------|
 |                 | single ping                | Ping00.hs          | ✓      |
 |                 | send first                 | Ping01.hs          | ✓      |
-| Ping-Determined | simple ping loop           | PingMulti02.hs     |        |
-| Ping-Race       | reverse ping               | PingRace00.hs      |        |
-|                 | two loops                  |                    |        |
-| Ping-Classic    | two loops var              | PingMulti00.hs     |        |
-|                 | double ping                | PingMulti03.hs     |        |
-|                 | nondet                     | NonDet.hs ?        |        |
-|                 | iter-simple                | PingLoopBounded.hs |        |
-|                 | work-stealing 2nd-phase    |                    |        |
-|                 | work-stealing              |                    |        |
-|                 | two-party ping             |                    |        |
+| Ping-Determined | simple ping loop           | PingMulti02.hs     | ✓      |
+| Ping-Race       | reverse ping               | PingRace00.hs      | ✓      |
+|                 | two loops                  |                    | ✓      |
+| Ping-Classic    | two loops var              | PingMulti00.hs     | ✓      |
+|                 | double ping                | PingMulti03.hs     | ✓      |
+|                 | nondet                     | NonDet.hs ?        | ✓      |
+|                 | iter-simple                | PingLoopBounded.hs | ✓      |
+| Work stealing   | work-stealing              | WorkStealingxx.hs  | ✓      |
+|                 | work-stealing 2nd-phase    | //                 | //     |
+|                 | two-party ping             | Ping2Party.hs      | ✓      |
 |                 | interleaved two-party ping |                    |        |
 |                 | simple pair                |                    |        |
 |                 | simple receive-from        |                    |        |

@@ -44,6 +44,7 @@ testFiles = [ TestFile "" "simple ping" "Ping00.hs"
             , TestFile "" "double ping" "PingMulti03.hs"
             , TestFile "" "nondet" "NonDet.hs"
             , TestFile "" "iter-simple" "PingLoopBounded.hs"
+            , TestFile "Work stealing" "work-stealing" "WorkStealingxx.hs"
             ]
 
 ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ mkTest code dir file
       assertEqual "Wrong exit code" code c
   where
     -- cmd = printf "cd %s && runghc %s --qc --verify --qc-samples 25" dir file
-    cmd = printf "cd %s && stack runghc %s -- --rewrite" dir file
+    cmd = printf "cd %s && stack runghc %s -- --rewrite && cd .symcheck && sicstus --noinfo --nologo --goal 'main,halt.' -l symverify.pl" dir file
 
 binPath pkgName = do
   testPath <- getExecutablePath

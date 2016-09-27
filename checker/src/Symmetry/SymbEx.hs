@@ -260,6 +260,7 @@ getVar (ASum v _ _)  = v
 getVar (AProd v _ _) = v
 getVar (APid v _)    = v
 getVar (ALift _ _ v) = ELift <$> getVar v
+getVar (APidMulti v _) = v
 
 absToType :: Typeable t => AbsVal t -> IL.Type
 absToType (ALift _ n x) = IL.TLift n (absToType x)
