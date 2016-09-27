@@ -934,7 +934,8 @@ symLookup :: SymbEx (Pid RMulti)
 symLookup p i
   = SE $ do APidMulti _ (Pid (Just r)) <- runSE p
             AInt _ _                   <- runSE i
-            return $ APid Nothing (Pid (Just (RElem r)))
+            x                          <- freshVar
+            return $ APid (Just (EVar x)) (Pid (Just (RElem r)))
                    
 
 -------------------------------------------------

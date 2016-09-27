@@ -25,27 +25,22 @@ main = tests >>= run
     run = defaultMainWithIngredients [
            testRunner
           ]
-    tests = group "Tests" [ quickCheckTests ]
+    tests = group "Tests" [ prologTests ]
 
 quickCheckTests
   = group "QuickCheck" [
-     testGroup "pos" <$> dirTests "checker/tests/pos" [] ExitSuccess
+     testGroup "pos" <$> dirTests "checker/tests/pos" [] cmd ExitSuccess
     ]
+  where
+    cmd = "--qc --verify --qc-samples 25"
 
-data TestFile = TestFile { benchmarkName    :: String
-                         , prologEquivalent :: String
-                         , testFileName         :: FilePath }
-
-testFiles = [ TestFile "" "simple ping" "Ping00.hs"
-            , TestFile "" "send first" "Ping01.hs"
-            , TestFile "Ping-Determined" "simple ping loop" "PingMulti02.hs"
-            , TestFile "Ping-Race" "reverse ping" "PingRace00.hs"
-            , TestFile "Ping-Classic" "two loops" "PingMulti00.hs"
-            , TestFile "" "double ping" "PingMulti03.hs"
-            , TestFile "" "nondet" "NonDet.hs"
-            , TestFile "" "iter-simple" "PingLoopBounded.hs"
-            , TestFile "Work stealing" "work-stealing" "WorkStealingxx.hs"
-            ]
+prologTests
+  = group "Prolog Rewriter" [
+      testGroup "benchmarks"     <$> dirTests "checker/tests/benchmarks"     [] cmd ExitSuccess
+    , testGroup "neg-benchmarks" <$> dirTests "checker/tests/neg-benchmarks" [] cmd (ExitFailure 1)
+    ]
+  where
+    cmd = "--rewrite"
 
 ---------------------------------------------------------------------------
 -- Nicked from LH:
@@ -53,24 +48,23 @@ testFiles = [ TestFile "" "simple ping" "Ping00.hs"
 group n xs = testGroup n <$> sequence xs
 
 ---------------------------------------------------------------------------
-dirTests :: FilePath -> [FilePath] -> ExitCode -> IO [TestTree]
+dirTests :: FilePath -> [FilePath] -> String -> ExitCode -> IO [TestTree]
 ---------------------------------------------------------------------------
-dirTests root ignored code
-  = do let files = testFileName <$> testFiles --walkDirectory root
-           tests = [ rel | f <- files, isTest f, let rel = makeRelative root f, rel `notElem` ignored ]
-       return    $ mkTest code root <$> tests
+dirTests root ignored testcmd code 
+  = do files    <- walkDirectory root
+       let tests = [ rel | f <- files, isTest f, let rel = makeRelative root f, rel `notElem` ignored ]
+       return    $ mkTest testcmd code root <$> tests
 
 ---------------------------------------------------------------------------
-mkTest :: ExitCode -> FilePath -> FilePath -> TestTree
+mkTest :: String -> ExitCode -> FilePath -> FilePath -> TestTree
 ---------------------------------------------------------------------------
-mkTest code dir file
+mkTest testcmd code dir file
   = testCase file $ do
       (_,_,_,ph) <- createProcess $ shell cmd
       c          <- waitForProcess ph
       assertEqual "Wrong exit code" code c
   where
-    -- cmd = printf "cd %s && runghc %s --qc --verify --qc-samples 25" dir file
-    cmd = printf "cd %s && stack runghc %s -- --rewrite && cd .symcheck && sicstus --noinfo --nologo --goal 'main,halt.' -l symverify.pl" dir file
+    cmd = printf "cd %s && runghc %s %s" dir file testcmd
 
 binPath pkgName = do
   testPath <- getExecutablePath
